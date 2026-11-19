@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NUCLEON — Arène Quantique</title>
+  <link rel="stylesheet" href="style.css" />
+  <script defer src="js/config.js"></script>
+  <script defer src="js/worlds.js"></script>
+  <script defer src="js/spatial.js"></script>
+  <script defer src="js/audio.js"></script>
+  <script defer src="js/net.js"></script>
+  <script defer src="js/entities.js"></script>
+  <script defer src="js/zone.js"></script>
+  <script defer src="js/ai.js"></script>
+  <script defer src="js/renderer.js"></script>
+  <script defer src="js/engine.js"></script>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- In-game HUD -->
+  <div id="hud-root" class="hud-root hidden">
+    <!-- Top Left: Player Nucleus Stats -->
+    <div class="hud-panel stats-card">
+      <div class="stat-row">
+        <div class="stat-head">
+          <span>⚡ Électrons</span>
+          <strong id="hud-electrons" class="mono">10 / 17</strong>
+        </div>
+        <div class="bar-track">
+          <div id="hud-electrons-bar" class="bar-fill cyan"></div>
+        </div>
+      </div>
+
+      <div class="stat-row">
+        <div class="stat-head">
+          <span>🛡️ Intégrité du noyau</span>
+          <strong id="hud-hp" class="mono">52 / 52</strong>
+        </div>
+        <div class="bar-track">
+          <div id="hud-hp-bar" class="bar-fill green"></div>
+        </div>
+      </div>
+
+      <div class="mini-metrics">
+        <div class="metric-chip">
+          <span>Production <em id="reactor-badge" class="reactor-badge hidden">⚡ RÉACTEUR</em></span>
+          <strong id="hud-prod" class="mono accent-cyan">+0.8 /s</strong>
+        </div>
+        <div class="metric-chip">
+          <span>Puissance</span>
+          <strong id="hud-power" class="mono">8</strong>
+        </div>
+        <div class="metric-chip">
+          <span>Absorptions</span>
+          <strong id="hud-kills" class="mono accent-gold">0</strong>
+        </div>
+      </div>
+
+      <div id="net-badge" class="net-badge hidden">🟢 Salon ----</div>
+    </div>
+
+    <!-- Top Center: Alive & Zone Status -->
+    <div class="top-center-stack">
+      <div class="hud-panel match-pill">
+        <div class="pill-seg">
+          <span class="pill-lbl">Survivants</span>
+          <strong id="hud-alive" class="mono">51 / 51</strong>
+        </div>
+        <div class="pill-sep"></div>
+        <div class="pill-seg">
+          <span class="pill-lbl">Rang</span>
+          <strong id="hud-rank" class="mono">#1</strong>
+        </div>
+        <div class="pill-sep"></div>
+        <div class="pill-seg">
+          <span id="hud-zone-label" class="zone-status stable">Zone stable</span>
+          <strong id="hud-zone-timer" class="mono">0:20</strong>
+        </div>
+      </div>
+
+      <div id="team-scoreboard" class="hud-panel team-scoreboard">
+        <div class="team-counts-row">
+          <div class="team-pill team-0">
+            <span class="team-pip" style="background:#00f0ff;box-shadow:0 0 8px #00f0ff"></span>
+            <span class="team-lbl">Cyan</span>
+            <strong id="team-count-0" class="mono">17</strong>
+          </div>
+          <div class="team-pill team-1">
+            <span class="team-pip" style="background:#ff2ea6;box-shadow:0 0 8px #ff2ea6"></span>
+            <span class="team-lbl">Magenta</span>
+            <strong id="team-count-1" class="mono">17</strong>
+          </div>
+          <div class="team-pill team-2">
+            <span class="team-pip" style="background:#ffb700;box-shadow:0 0 8px #ffb700"></span>
+            <span class="team-lbl">Ambre</span>
+            <strong id="team-count-2" class="mono">17</strong>
+          </div>
+        </div>
+        <div class="team-bar-track">
+          <div id="team-bar-0" class="team-bar-seg" style="width:33.3%;background:#00f0ff"></div>
+          <div id="team-bar-1" class="team-bar-seg" style="width:33.3%;background:#ff2ea6"></div>
+          <div id="team-bar-2" class="team-bar-seg" style="width:33.4%;background:#ffb700"></div>
+        </div>
+      </div>
+
+      <div id="zone-warning-banner" class="zone-warning hidden">
+        ⚠️ HORS DE LA ZONE QUANTIQUE — REJOIGNEZ LE CERCLE SÛR
+      </div>
+    </div>
+
+    <!-- Top Right: Controls, Leaderboard & Kill Feed -->
+    <div class="top-right-stack">
+      <div class="hud-actions">
+        <button id="btn-mute" class="icon-btn" title="Couper le son (M)">🔊</button>
+        <button id="btn-pause" class="icon-btn" title="Pause (P / Échap)">⏸</button>
+      </div>
+
+      <div class="hud-panel leaderboard-card">
+        <div class="card-title">Classement</div>
+        <div id="leaderboard-list" class="lb-list"></div>
+      </div>
+
+      <div id="kill-feed" class="kill-feed"></div>
+    </div>
+
+    <!-- Bottom Left: Minimap Radar -->
+    <div class="minimap-wrap">
+      <canvas id="minimap-canvas" width="170" height="170"></canvas>
+    </div>
+
+    <!-- Bottom Center: Tactical Controls Bar -->
+    <div class="hud-panel tactical-bar">
+      <div id="skill-assault" class="skill-chip">
+        <span class="key-tag">Clic G / A</span>
+        <span class="skill-name">Assaut</span>
+      </div>
+      <div id="skill-shield" class="skill-chip">
+        <span class="key-tag">Clic D / E</span>
+        <span class="skill-name">Bouclier</span>
+        <span class="shield-bonus-tag">+30%</span>
+      </div>
+      <div id="skill-dash" class="skill-chip dash-chip ready">
+        <div id="dash-fill" class="dash-progress"></div>
+        <span class="key-tag">Espace</span>
+        <span class="skill-name">Surcharge</span>
+        <span id="dash-label" class="dash-cd mono">Prêt</span>
+      </div>
+    </div>
+
+    <!-- Spectate Bar -->
+    <div id="spectate-bar" class="hud-panel spectate-bar hidden">
+      <span>Observation : <strong id="spectate-name">-</strong></span>
+      <button id="btn-spectate-next" class="btn-secondary small">Suivant ↻</button>
+      <button id="btn-spectate-replay" class="btn-primary small">Rejouer</button>
+    </div>
+  </div>
+
+  <!-- Start Menu Modal -->
+  <div id="menu-modal" class="modal-backdrop">
+    <div class="modal-card start-card">
+      <div class="brand-header">
+        <div class="atom-badge">⚛️</div>
+        <div>
+          <h1 class="game-title">NUCLEON</h1>
+          <p class="game-tagline">Match à mort quantique • 51 Noyaux • Nuées d'électrons</p>
+        </div>
+      </div>
+
+      <div class="mechanics-grid">
+        <div class="mech-item">
+          <span class="mech-icon">🛡️</span>
+          <div>
+            <strong>Bouclier intelligent & Recharge</strong>
+            <p>Le bouclier intercepte les électrons ennemis (+30% rés.). Combattre coûte cher : rechargez entre deux duels !</p>
+          </div>
+        </div>
+        <div class="mech-item">
+          <span class="mech-icon">⚛️</span>
+          <div>
+            <strong>Équipes 3 Couleurs / Solo</strong>
+            <p>Aucun tir allié entre noyaux de même couleur. Éliminez les autres couleurs en vidant leur intégrité.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <span class="field-label">Monde / Carte</span>
+        <div id="world-row" class="world-row">
+          <button type="button" class="world-pill active" data-world="open">🌌 Espace</button>
+          <button type="button" class="world-pill" data-world="maze">🧩 Labyrinthe</button>
+          <button type="button" class="world-pill" data-world="pillars">🪨 Piliers</button>
+          <button type="button" class="world-pill" data-world="nexus">⚡ Réacteurs</button>
+        </div>
+        <div id="world-desc" class="world-desc">Arène ouverte classique, combats fluides</div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-section">
+          <label class="field-label" for="player-name-input">Nom du noyau</label>
+          <input id="player-name-input" type="text" maxlength="16" value="Noyau-01" placeholder="Votre pseudo..." />
+        </div>
+
+        <div class="form-section">
+          <span class="field-label">Mode de jeu</span>
+          <div class="mode-row">
+            <button type="button" class="mode-pill active" data-mode="teams">Équipes (3 Couleurs)</button>
+            <button type="button" class="mode-pill" data-mode="solo">Solo</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-section">
+          <span id="color-picker-label" class="field-label">Votre équipe</span>
+          <div id="swatch-row" class="swatch-row"></div>
+        </div>
+
+        <div class="form-section">
+          <span class="field-label">Intensité IA</span>
+          <div class="diff-row">
+            <button type="button" class="diff-pill" data-diff="detente">Détente</button>
+            <button type="button" class="diff-pill active" data-diff="standard">Standard</button>
+            <button type="button" class="diff-pill" data-diff="chaos">Chaos</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Multiplayer Room (4-Letter Code) -->
+      <div id="mp-box" class="mp-box">
+        <div class="mp-header-row">
+          <span class="field-label">Multijoueur avec un ami (Code 4 lettres)</span>
+        </div>
+
+        <div id="mp-idle" class="mp-idle">
+          <button type="button" id="btn-mp-host" class="btn-secondary small">🔗 Créer un salon</button>
+          <div class="mp-join-group">
+            <input id="mp-join-input" type="text" maxlength="4" placeholder="CODE" autocomplete="off" />
+            <button type="button" id="btn-mp-join" class="btn-secondary small">🎮 Rejoindre</button>
+          </div>
+        </div>
+        <div id="mp-error" class="mp-error hidden"></div>
+
+        <div id="mp-host-panel" class="mp-active-panel hidden">
+          <div class="mp-code-line">
+            <span class="mp-code-lbl">Code du salon :</span>
+            <strong id="mp-code-text" class="mp-code-display mono">----</strong>
+            <button type="button" id="btn-mp-copy" class="btn-ghost small">Copier</button>
+            <button type="button" id="btn-mp-leave-host" class="btn-ghost small">Quitter</button>
+          </div>
+          <div class="mp-sub-row">
+            <span id="mp-host-status" class="mp-status">⏳ En attente d'un ami...</span>
+            <div id="mp-friend-relation-row" class="friend-rel-row">
+              <button type="button" class="friend-rel-pill active" data-rel="ally">Même équipe</button>
+              <button type="button" class="friend-rel-pill" data-rel="rival">Adversaires</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="mp-guest-panel" class="mp-active-panel hidden">
+          <div class="mp-code-line">
+            <span id="mp-guest-status" class="mp-status">🟢 Connecté</span>
+            <button type="button" id="btn-mp-leave-guest" class="btn-ghost small">Quitter</button>
+          </div>
+          <div id="mp-guest-lobby-info" class="mp-guest-info">En attente de l'hôte...</div>
+        </div>
+      </div>
+
+      <div class="controls-cheat">
+        <span><kbd>Souris</kbd> Diriger le noyau</span>
+        <span><kbd>Clic G</kbd> / <kbd>A</kbd> Projeter l'assaut</span>
+        <span><kbd>Clic D</kbd> / <kbd>E</kbd> Bouclier intelligent (+30% rés.)</span>
+        <span><kbd>Espace</kbd> Surcharge (Dash)</span>
+      </div>
+
+      <div class="menu-footer">
+        <span id="best-record-text" class="best-badge">Record : aucune partie terminée</span>
+        <button id="btn-play" class="btn-primary big">LANCER LA PARTIE</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pause Modal -->
+  <div id="pause-modal" class="modal-backdrop hidden">
+    <div class="modal-card compact-card">
+      <h2 class="modal-title">PAUSE</h2>
+      <p class="modal-sub">La simulation quantique est suspendue.</p>
+      <div class="modal-btn-stack">
+        <button id="btn-resume" class="btn-primary">Reprendre</button>
+        <button id="btn-restart-pause" class="btn-secondary">Recommencer</button>
+        <button id="btn-menu-pause" class="btn-ghost">Menu principal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- End of Match Modal -->
+  <div id="end-modal" class="modal-backdrop hidden">
+    <div class="modal-card end-card">
+      <h2 id="end-title" class="end-title">NOYAU ABSORBÉ</h2>
+      <p id="end-subtitle" class="modal-sub">-</p>
+
+      <div class="end-stats-grid">
+        <div class="end-stat">
+          <span>Classement</span>
+          <strong id="end-rank" class="mono">#12 / 51</strong>
+        </div>
+        <div class="end-stat">
+          <span>Absorptions</span>
+          <strong id="end-kills" class="mono">0</strong>
+        </div>
+        <div class="end-stat">
+          <span>Pic d'électrons</span>
+          <strong id="end-peak-electrons" class="mono">0</strong>
+        </div>
+        <div class="end-stat">
+          <span>Prod. maximale</span>
+          <strong id="end-peak-prod" class="mono">0/s</strong>
+        </div>
+        <div class="end-stat wide">
+          <span>Temps de survie</span>
+          <strong id="end-time" class="mono">0:00</strong>
+        </div>
+      </div>
+
+      <div class="modal-btn-row">
+        <button id="btn-replay" class="btn-primary">Rejouer</button>
+        <button id="btn-spectate" class="btn-secondary">Observer</button>
+        <button id="btn-end-menu" class="btn-ghost">Menu</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
