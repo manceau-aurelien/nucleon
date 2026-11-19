@@ -73,6 +73,11 @@
     AMBIENT_PROD_GAIN: 0.22,
     AMBIENT_CLUSTER_PROD_GAIN: 0.75,
 
+    // Solo mode with a friend set to "Même équipe": both humans share this
+    // team id (AIs stay at -1, each on its own), so they never hurt each other.
+    // Kept outside 0..2 so it never collides with the 3-color teams.
+    DUO_TEAM: 3,
+
     // 3-Color Team Battle Mode
     TEAMS: [
       { id: 0, name: 'Cyan',    label: 'Équipe Cyan',    hue: 188, hex: '#00f0ff' },

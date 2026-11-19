@@ -92,9 +92,13 @@ body.in-game {
 
 .bar-fill {
   height: 100%;
-  width: 50%;
+  width: 100%;
   border-radius: 99px;
-  transition: width 90ms linear;
+  /* Filled via transform: scaleX (GPU only) instead of width (layout) */
+  transform: scaleX(0.5);
+  transform-origin: left center;
+  transition: transform 90ms linear;
+  will-change: transform;
 }
 
 .bar-fill.cyan {
@@ -502,7 +506,9 @@ body.in-game {
   bottom: 0;
   width: 100%;
   background: rgba(155, 77, 255, 0.26);
-  transition: width 80ms linear;
+  transform-origin: left center;
+  transition: transform 80ms linear;
+  will-change: transform;
 }
 
 .dash-chip.ready {
@@ -538,9 +544,9 @@ body.in-game {
   z-index: 30;
   display: grid;
   place-items: center;
-  background: rgba(3, 6, 16, 0.62);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  /* No backdrop-filter: the game canvas keeps animating behind the menu / end
+     screen, so a blur had to be recomputed on the full screen every frame. */
+  background: rgba(3, 6, 16, 0.72);
   padding: 16px;
 }
 

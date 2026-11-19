@@ -18,7 +18,7 @@ Jeu d'arène inspiré d'*agar.io* où chaque joueur incarne le noyau d'une nuée
   - `Labyrinthe` — Couloirs quantiques pour embuscades et blocage d'assauts.
   - `Piliers` — Monolithes magnétiques pour esquiver et contourner.
   - `Réacteurs` — 5 zones d'énergie boostant la production (`+85 %` à `+110 %`) et la régénération.
-- **Multijoueur par code à 4 lettres** : créez un salon et partagez le code (ex : `KRAZ`) pour jouer en équipe ou en duel avec un ami via WebRTC (PeerJS), sans serveur dédié.
+- **Multijoueur par code à 4 lettres** : créez un salon et partagez le code (ex : `KRAZ`) pour jouer en équipe ou en duel avec un ami via WebRTC (PeerJS), sans serveur dédié. En mode **Solo**, l'option « Même équipe » (par défaut) vous place **en duo contre toutes les IA** : aucun dégât entre vous deux, victoire quand il ne reste que votre duo. « Adversaires » garde le chacun-pour-soi.
 
 ---
 

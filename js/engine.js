@@ -32,6 +32,51 @@
     return copy;
   }
 
+  // ---- HUD helpers: touch the DOM only when a value really changes ----
+  // Writing the same textContent / class / width again still invalidates
+  // style & layout, and the HUD refreshes ~12 times per second.
+  function setText(el, value) {
+    if (el && el._hudText !== value) {
+      el._hudText = value;
+      el.textContent = value;
+    }
+  }
+
+  function setClass(el, value) {
+    if (el && el.className !== value) el.className = value;
+  }
+
+  function setToggle(el, cls, on) {
+    if (el && el.classList.contains(cls) !== on) el.classList.toggle(cls, on);
+  }
+
+  function setHidden(el, hidden) {
+    setToggle(el, 'hidden', hidden);
+  }
+
+  // Bars use transform: scaleX (compositor only, no layout) instead of width
+  function setScaleX(el, ratio) {
+    if (!el) return;
+    var r = Math.round(Math.max(0, Math.min(1, ratio)) * 500) / 500;
+    if (el._hudScale !== r) {
+      el._hudScale = r;
+      el.style.transform = 'scaleX(' + r + ')';
+    }
+  }
+
+  function setWidthPct(el, pct) {
+    if (!el) return;
+    var v = pct.toFixed(1);
+    if (el._hudWidth !== v) {
+      el._hudWidth = v;
+      el.style.width = v + '%';
+    }
+  }
+
+  function comparePowerDesc(a, b) {
+    return b.power - a.power;
+  }
+
   function Engine() {
     this.canvas = document.getElementById('game-canvas');
     this.minimapCanvas = document.getElementById('minimap-canvas');
@@ -240,6 +285,8 @@
 
     window.addEventListener('resize', function () {
       self.renderer.resize();
+      // Resizing clears the canvas: allow one fresh frame even while paused
+      self._pausedFrameDrawn = false;
     });
 
     window.addEventListener('blur', function () {
@@ -666,7 +713,8 @@
       dom.mpHostStatus.textContent = mp.connected
         ? '🟢 ' + mp.friendName + ' connecté !'
         : '⏳ En attente d\'un ami...';
-      dom.mpFriendRelRow.classList.toggle('hidden', st.gameMode !== 'teams');
+      // Same team / rivals applies to both modes (Solo: duo vs all AIs, or duel)
+      dom.mpFriendRelRow.classList.remove('hidden');
     } else if (mp.active && mp.role === 'guest') {
       dom.mpGuestStatus.textContent = '🟢 Connecté au salon ' + (mp.code || '');
     }
@@ -745,9 +793,12 @@
     if (msg.t === 'lobby') {
       st.mp.friendName = msg.hostName || 'Hôte';
       var wMeta = Worlds.getWorldMeta(msg.worldId);
+      var relLabel = msg.friendRelation === 'ally' ? 'Même équipe' : 'Adversaires';
       var mLabel = msg.gameMode === 'teams'
-        ? 'Équipes (' + (msg.friendRelation === 'ally' ? 'Même équipe' : 'Adversaires') + ')'
-        : 'Solo';
+        ? 'Équipes (' + relLabel + ')'
+        : msg.friendRelation === 'ally'
+          ? 'Solo (en duo contre les IA)'
+          : 'Solo (' + relLabel + ')';
       if (this._dom.mpGuestLobbyInfo) {
         this._dom.mpGuestLobbyInfo.textContent =
           'Hôte : ' + st.mp.friendName + ' • Monde : ' + wMeta.name + ' • ' + mLabel;
@@ -881,8 +932,11 @@
     var idCounter = 0;
 
     // Spawn Host/Solo Player (if not attract mode)
+    // Solo + friend on the same side: the two humans form a duo against every AI
+    var isSoloDuo = !isTeamMode && isHostMp && st.friendRelation === 'ally';
+
     if (!attractMode) {
-      var pTeam = isTeamMode ? st.playerTeam : -1;
+      var pTeam = isTeamMode ? st.playerTeam : isSoloDuo ? Config.DUO_TEAM : -1;
       var pHue = isTeamMode ? Config.TEAMS[pTeam].hue : st.playerHue;
       var pAngMin = isTeamMode ? pTeam * ((Math.PI * 2) / 3) - 0.7 : 0;
       var pAngMax = isTeamMode ? pTeam * ((Math.PI * 2) / 3) + 0.7 : Math.PI * 2;
@@ -925,11 +979,20 @@
       if (isTeamMode) {
         gTeam = st.friendRelation === 'ally' ? player.team : (player.team + 1) % 3;
         gHue = Config.TEAMS[gTeam].hue;
-      } else if (Math.abs(gHue - player.hue) < 18) {
-        gHue = (gHue + 54) % 360;
+      } else {
+        if (isSoloDuo) gTeam = Config.DUO_TEAM;
+        if (Math.abs(gHue - player.hue) < 18) {
+          gHue = (gHue + 54) % 360;
+        }
       }
       var gAngMin = isTeamMode ? gTeam * ((Math.PI * 2) / 3) - 0.7 : 0;
       var gAngMax = isTeamMode ? gTeam * ((Math.PI * 2) / 3) + 0.7 : Math.PI * 2;
+      if (isSoloDuo) {
+        // Duo partners start on the same side of the arena
+        var hostAng = Math.atan2(player.y, player.x);
+        gAngMin = hostAng - 0.45;
+        gAngMax = hostAng + 0.45;
+      }
       var gPos = this._findUnblockedSpawn(
         st.world,
         420,
@@ -938,7 +1001,7 @@
         gAngMax,
         st.nuclei,
         46,
-        isTeamMode && gTeam === player.team ? null : player
+        (isTeamMode && gTeam === player.team) || isSoloDuo ? null : player
       );
       guestNuc = Entities.createNucleus(
         idCounter++,
@@ -1191,16 +1254,28 @@
   };
 
   Engine.prototype._loop = function (now) {
-    var self = this;
-    requestAnimationFrame(function (ts) {
-      self._loop(ts);
-    });
+    // Reuse one bound callback instead of allocating a closure every frame
+    if (!this._boundLoop) {
+      var self = this;
+      this._boundLoop = function (ts) {
+        self._loop(ts);
+      };
+    }
+    requestAnimationFrame(this._boundLoop);
 
     if (!this.lastFrameTime) this.lastFrameTime = now;
     var dt = Math.min(0.05, Math.max(0.001, (now - this.lastFrameTime) / 1000));
     this.lastFrameTime = now;
 
-    if (this.state.mode !== 'PAUSED' || this.state.mp.active) {
+    // Solo pause: the picture is frozen, so draw it once and then let the
+    // GPU rest instead of repainting an identical frame 60-144 times per second.
+    var frozen = this.state.mode === 'PAUSED' && !this.state.mp.active;
+    if (frozen && this._pausedFrameDrawn) {
+      return;
+    }
+    this._pausedFrameDrawn = frozen;
+
+    if (!frozen) {
       this._step(dt);
     }
 
@@ -1234,9 +1309,13 @@
 
     // 1. Update Zone
     var self = this;
-    st.zone.update(dt, st.aliveCount, nuclei, pool, fx, Audio, function (killer, victim) {
-      self._absorbNucleus(killer, victim);
-    });
+    if (!this._zoneKillCb) {
+      // Created once instead of a fresh closure every tick
+      this._zoneKillCb = function (killer, victim) {
+        self._absorbNucleus(killer, victim);
+      };
+    }
+    st.zone.update(dt, st.aliveCount, nuclei, pool, fx, Audio, this._zoneKillCb);
 
     // 2. Maintain ambient particles
     st.ambientTimer += dt;
@@ -1951,9 +2030,7 @@
     var st = this.state;
     var pool = st.electrons;
     var nuclei = st.nuclei;
-    var fx = st.fx;
 
-    var high = pool.highWater;
     var active = pool.active;
     var oid = pool.ownerId;
     var x = pool.x;
@@ -1964,79 +2041,112 @@
     var earRangeSq = 950 * 950;
     var nLen = nuclei.length;
 
-    for (var i = 0; i < high; i++) {
-      if (!active[i]) continue;
-      var ex = x[i];
-      var ey = y[i];
-      var attackerId = oid[i];
+    // Perf: instead of testing every electron against all 51 nuclei (O(E x N)),
+    // each nucleus only scans the spatial-grid cells that overlap its core.
+    // The grid was rebuilt this tick in _updateElectrons (despawned electrons
+    // stay linked but are filtered out by active[]).
+    var spatial = st.spatial;
+    var head = spatial.head;
+    var next = spatial.next;
+    var dim = spatial.gridDim;
 
-      for (var k = 0; k < nLen; k++) {
-        var nuc = nuclei[k];
-        var attacker = nuclei[attackerId];
-        if (!nuc.alive || nuc.id === attackerId || Entities.areAllies(attacker, nuc)) continue;
+    for (var k = 0; k < nLen; k++) {
+      var nuc = nuclei[k];
+      if (!nuc.alive) continue;
 
-        var dx = ex - nuc.x;
-        var dy = ey - nuc.y;
-        var hitR = nuc.radius + Config.ELECTRON_RADIUS;
-        if (dx * dx + dy * dy < hitR * hitR) {
-          pool.despawn(i, nuclei);
+      var hitR = nuc.radius + Config.ELECTRON_RADIUS;
+      var hitRSq = hitR * hitR;
+      var minGx = spatial.getCellX(nuc.x - hitR);
+      var maxGx = spatial.getCellX(nuc.x + hitR);
+      var minGy = spatial.getCellY(nuc.y - hitR);
+      var maxGy = spatial.getCellY(nuc.y + hitR);
 
-          var dmg = Config.ELECTRON_DAMAGE;
-          if (nuc.stance === 'SHIELD') {
-            dmg *= Config.SHIELD_DAMAGE_MULT;
-          }
-          nuc.hp -= dmg;
-          nuc.lastDamagedTime = st.elapsedTime;
-          nuc.underSiegeTimer = 0.5;
-          nuc.lastAttackerId = attackerId;
-          nuc.hitFlash = 1;
-
-          if (attacker) {
-            attacker.damageDealt += dmg;
-          }
-
-          var hue = attacker ? attacker.hue : nuc.hue;
-          Entities.spawnDrainBeam(fx, ex, ey, nuc.x, nuc.y, hue);
-          Entities.spawnSpark(
-            fx,
-            ex,
-            ey,
-            (Math.random() - 0.5) * 140,
-            (Math.random() - 0.5) * 140,
-            2.8,
-            hue,
-            0.25,
-            0.7
-          );
-          if (nuc.stance === 'SHIELD') {
-            Entities.spawnSpark(
-              fx,
-              ex,
-              ey,
-              (Math.random() - 0.5) * 180,
-              (Math.random() - 0.5) * 180,
-              3.4,
-              188,
-              0.28,
-              0.95
-            );
-          }
-
-          var cdx = nuc.x - camX;
-          var cdy = nuc.y - camY;
-          if (cdx * cdx + cdy * cdy < earRangeSq) {
-            Audio.playNucleusHit(nuc.isPlayer);
-            if (nuc.isPlayer) {
-              this.renderer.addShake(2.2, 0.08);
+      for (var gy = minGy; gy <= maxGy && nuc.alive; gy++) {
+        var rowOff = gy * dim;
+        for (var gx = minGx; gx <= maxGx && nuc.alive; gx++) {
+          var i = head[rowOff + gx];
+          while (i !== -1 && nuc.alive) {
+            var nextI = next[i];
+            if (active[i]) {
+              var attackerId = oid[i];
+              var attacker = nuclei[attackerId];
+              if (nuc.id !== attackerId && !Entities.areAllies(attacker, nuc)) {
+                var ex = x[i];
+                var ey = y[i];
+                var dx = ex - nuc.x;
+                var dy = ey - nuc.y;
+                if (dx * dx + dy * dy < hitRSq) {
+                  this._applyNucleusHit(i, nuc, attacker, attackerId, ex, ey, camX, camY, earRangeSq);
+                }
+              }
             }
+            i = nextI;
           }
-
-          if (nuc.hp <= 0) {
-            this._absorbNucleus(attacker, nuc);
-          }
-          break;
         }
       }
+    }
+  };
+
+  Engine.prototype._applyNucleusHit = function (i, nuc, attacker, attackerId, ex, ey, camX, camY, earRangeSq) {
+    var st = this.state;
+    var pool = st.electrons;
+    var nuclei = st.nuclei;
+    var fx = st.fx;
+
+    pool.despawn(i, nuclei);
+
+    var dmg = Config.ELECTRON_DAMAGE;
+    if (nuc.stance === 'SHIELD') {
+      dmg *= Config.SHIELD_DAMAGE_MULT;
+    }
+    nuc.hp -= dmg;
+    nuc.lastDamagedTime = st.elapsedTime;
+    nuc.underSiegeTimer = 0.5;
+    nuc.lastAttackerId = attackerId;
+    nuc.hitFlash = 1;
+
+    if (attacker) {
+      attacker.damageDealt += dmg;
+    }
+
+    var hue = attacker ? attacker.hue : nuc.hue;
+    Entities.spawnDrainBeam(fx, ex, ey, nuc.x, nuc.y, hue);
+    Entities.spawnSpark(
+      fx,
+      ex,
+      ey,
+      (Math.random() - 0.5) * 140,
+      (Math.random() - 0.5) * 140,
+      2.8,
+      hue,
+      0.25,
+      0.7
+    );
+    if (nuc.stance === 'SHIELD') {
+      Entities.spawnSpark(
+        fx,
+        ex,
+        ey,
+        (Math.random() - 0.5) * 180,
+        (Math.random() - 0.5) * 180,
+        3.4,
+        188,
+        0.28,
+        0.95
+      );
+    }
+
+    var cdx = nuc.x - camX;
+    var cdy = nuc.y - camY;
+    if (cdx * cdx + cdy * cdy < earRangeSq) {
+      Audio.playNucleusHit(nuc.isPlayer);
+      if (nuc.isPlayer) {
+        this.renderer.addShake(2.2, 0.08);
+      }
+    }
+
+    if (nuc.hp <= 0) {
+      this._absorbNucleus(attacker, nuc);
     }
   };
 
@@ -2149,47 +2259,33 @@
     if (st.mode === 'PLAYING') {
       if (victim.isPlayer) {
         this._finishMatch(false, killer ? killer.name : 'Zone Quantique');
-      } else if (st.gameMode === 'teams' && st.player && st.player.alive) {
-        var enemyAlive = false;
-        for (var ei = 0; ei < st.nuclei.length; ei++) {
-          var en = st.nuclei[ei];
-          if (en.alive && en.team !== st.player.team) {
-            enemyAlive = true;
-            break;
+      } else if (st.player && st.player.alive && !this._hasEnemyAlive(st.player)) {
+        // Victory once every survivor is on the player's side
+        // (3-color teams, Solo duo with a friend, or plain last-one-standing)
+        if (st.mp.active && st.mp.role === 'host' && st.mp.connected) {
+          var gNuc = st.nuclei[st.mp.friendId];
+          if (gNuc && Entities.areAllies(gNuc, st.player)) {
+            Net.send({ t: 'end', victory: true });
           }
         }
-        if (!enemyAlive) {
-          if (st.mp.active && st.mp.role === 'host' && st.mp.connected) {
-            var gNuc = st.nuclei[st.mp.friendId];
-            if (gNuc && gNuc.team === st.player.team) {
-              Net.send({ t: 'end', victory: true });
-            }
-          }
-          this._finishMatch(true, '');
-        }
-      } else if (st.aliveCount === 1 && st.player && st.player.alive) {
         this._finishMatch(true, '');
       }
     } else if (st.mp.active && st.mp.role === 'host' && st.mp.connected) {
       var guestN = st.nuclei[st.mp.friendId];
-      if (guestN && guestN.alive) {
-        if (st.gameMode === 'teams') {
-          var gEnemyAlive = false;
-          for (var gi2 = 0; gi2 < st.nuclei.length; gi2++) {
-            var ge = st.nuclei[gi2];
-            if (ge.alive && ge.team !== guestN.team) {
-              gEnemyAlive = true;
-              break;
-            }
-          }
-          if (!gEnemyAlive) {
-            Net.send({ t: 'end', victory: true });
-          }
-        } else if (st.aliveCount === 1) {
-          Net.send({ t: 'end', victory: true });
-        }
+      if (guestN && guestN.alive && !this._hasEnemyAlive(guestN)) {
+        Net.send({ t: 'end', victory: true });
       }
     }
+  };
+
+  // True if some living nucleus is hostile to `ref` (not itself, not an ally)
+  Engine.prototype._hasEnemyAlive = function (ref) {
+    var nuclei = this.state.nuclei;
+    for (var i = 0; i < nuclei.length; i++) {
+      var n = nuclei[i];
+      if (n.alive && n !== ref && !Entities.areAllies(ref, n)) return true;
+    }
+    return false;
   };
 
   Engine.prototype._pushKillFeed = function (killerName, victimName, killerIsPlayer, victimIsPlayer) {
@@ -2221,6 +2317,9 @@
         this._dom.endTitle.textContent = 'VICTOIRE — ÉQUIPE ' + teamInfo.name.toUpperCase() + ' !';
         this._dom.endSubtitle.textContent =
           'Votre équipe a éliminé les deux autres couleurs (' + teamSurvivors + ' survivant(s)).';
+      } else if (player && player.team === Config.DUO_TEAM) {
+        this._dom.endTitle.textContent = 'VICTOIRE EN DUO !';
+        this._dom.endSubtitle.textContent = 'Votre duo a absorbé tous les autres noyaux de l\'arène.';
       } else {
         this._dom.endTitle.textContent = 'VICTOIRE QUANTIQUE !';
         this._dom.endSubtitle.textContent = 'Vous avez absorbé tous les noyaux de l\'arène.';
@@ -2651,7 +2750,7 @@
     var next = alive[(idx + 1) % alive.length];
     this.state.spectateTarget = next;
     if (this._dom.spectateName) {
-      this._dom.spectateName.textContent = next.name + ' (⚡ ' + next.electronCount + ')';
+      setText(this._dom.spectateName, next.name + ' (⚡ ' + next.electronCount + ')');
     }
   };
 
@@ -2712,12 +2811,12 @@
     var player = st.player;
 
     // Alive counter
-    dom.hudAlive.textContent = st.aliveCount + ' / ' + st.totalCount;
+    setText(dom.hudAlive, st.aliveCount + ' / ' + st.totalCount);
 
     // Team scoreboard update
     if (dom.teamScoreboard) {
       var showTeams = st.gameMode === 'teams';
-      dom.teamScoreboard.classList.toggle('hidden', !showTeams);
+      setHidden(dom.teamScoreboard, !showTeams);
       if (showTeams) {
         var counts = [0, 0, 0];
         for (var ti = 0; ti < st.nuclei.length; ti++) {
@@ -2726,10 +2825,10 @@
         }
         var totalAliveTeams = counts[0] + counts[1] + counts[2];
         for (var tc = 0; tc < 3; tc++) {
-          if (dom.teamCounts[tc]) dom.teamCounts[tc].textContent = String(counts[tc]);
+          if (dom.teamCounts[tc]) setText(dom.teamCounts[tc], String(counts[tc]));
           if (dom.teamBars[tc]) {
             var pct = totalAliveTeams > 0 ? (counts[tc] / totalAliveTeams) * 100 : 0;
-            dom.teamBars[tc].style.width = pct.toFixed(1) + '%';
+            setWidthPct(dom.teamBars[tc], pct);
           }
         }
       }
@@ -2738,17 +2837,17 @@
     // Zone status
     var z = st.zone;
     if (z.state === 'HOLD') {
-      dom.hudZoneLabel.textContent = 'Zone stable';
-      dom.hudZoneLabel.className = 'zone-status stable';
-      dom.hudZoneTimer.textContent = formatTime(Math.ceil(z.timer));
+      setText(dom.hudZoneLabel, 'Zone stable');
+      setClass(dom.hudZoneLabel, 'zone-status stable');
+      setText(dom.hudZoneTimer, formatTime(Math.ceil(z.timer)));
     } else if (z.state === 'SHRINK') {
-      dom.hudZoneLabel.textContent = 'Rétrécissement !';
-      dom.hudZoneLabel.className = 'zone-status shrinking';
-      dom.hudZoneTimer.textContent = formatTime(Math.ceil(z.timer));
+      setText(dom.hudZoneLabel, 'Rétrécissement !');
+      setClass(dom.hudZoneLabel, 'zone-status shrinking');
+      setText(dom.hudZoneTimer, formatTime(Math.ceil(z.timer)));
     } else {
-      dom.hudZoneLabel.textContent = 'Zone finale';
-      dom.hudZoneLabel.className = 'zone-status final';
-      dom.hudZoneTimer.textContent = '∞';
+      setText(dom.hudZoneLabel, 'Zone finale');
+      setClass(dom.hudZoneLabel, 'zone-status final');
+      setText(dom.hudZoneTimer, '∞');
     }
 
     // Sort alive nuclei for leaderboard & player rank (reuse scratch array)
@@ -2757,9 +2856,7 @@
     for (var i = 0; i < st.nuclei.length; i++) {
       if (st.nuclei[i].alive) aliveList.push(st.nuclei[i]);
     }
-    aliveList.sort(function (a, b) {
-      return b.power - a.power;
-    });
+    aliveList.sort(comparePowerDesc);
 
     // Leaderboard Top 6 (update DOM only when content changes)
     var lbHtml = '';
@@ -2789,55 +2886,52 @@
     // Player stats & tactical bar
     if (dom.netBadge) {
       var showNet = st.mp.active && st.mp.connected;
-      dom.netBadge.classList.toggle('hidden', !showNet);
+      setHidden(dom.netBadge, !showNet);
       if (showNet) {
         var rtt = Net.rtt;
         var latText = Net.transport === 'local' ? 'Local' : rtt !== null ? rtt + ' ms' : 'P2P';
-        dom.netBadge.textContent = '🟢 Salon ' + (st.mp.code || '') + ' • ' + latText;
+        setText(dom.netBadge, '🟢 Salon ' + (st.mp.code || '') + ' • ' + latText);
       }
     }
 
     if (player && player.alive) {
       var pRank = aliveList.indexOf(player) + 1;
-      dom.hudRank.textContent = '#' + (pRank > 0 ? pRank : '-');
-      dom.hudElectrons.textContent = player.electronCount + ' / ' + player.maxElectrons;
-      dom.hudElectronsBar.style.width =
-        Math.min(100, (player.electronCount / Math.max(1, player.maxElectrons)) * 100).toFixed(1) + '%';
+      setText(dom.hudRank, '#' + (pRank > 0 ? pRank : '-'));
+      setText(dom.hudElectrons, player.electronCount + ' / ' + player.maxElectrons);
+      setScaleX(dom.hudElectronsBar, player.electronCount / Math.max(1, player.maxElectrons));
       var effProd = player.prodRate * (player._reactorMult || 1);
-      dom.hudProd.textContent = '+' + effProd.toFixed(1) + ' /s';
+      setText(dom.hudProd, '+' + effProd.toFixed(1) + ' /s');
       if (dom.reactorBadge) {
-        dom.reactorBadge.classList.toggle('hidden', !player._inReactor);
+        setHidden(dom.reactorBadge, !player._inReactor);
       }
-      dom.hudHp.textContent = Math.ceil(player.hp) + ' / ' + Math.ceil(player.maxHp);
-      dom.hudHpBar.style.width =
-        Math.max(0, Math.min(100, (player.hp / Math.max(1, player.maxHp)) * 100)).toFixed(1) + '%';
-      dom.hudPower.textContent = Math.floor(player.power);
-      dom.hudKills.textContent = String(player.kills);
+      setText(dom.hudHp, Math.ceil(player.hp) + ' / ' + Math.ceil(player.maxHp));
+      setScaleX(dom.hudHpBar, player.hp / Math.max(1, player.maxHp));
+      setText(dom.hudPower, String(Math.floor(player.power)));
+      setText(dom.hudKills, String(player.kills));
 
-      dom.zoneWarningBanner.classList.toggle('hidden', !z.isOutside(player.x, player.y));
+      setHidden(dom.zoneWarningBanner, !z.isOutside(player.x, player.y));
 
       // Tactical bar
-      dom.skillAssault.classList.toggle('active', player.stance === 'ASSAULT');
-      dom.skillShield.classList.toggle('active', player.stance === 'SHIELD');
+      setToggle(dom.skillAssault, 'active', player.stance === 'ASSAULT');
+      setToggle(dom.skillShield, 'active', player.stance === 'SHIELD');
       if (player.dashCd > 0) {
-        var readyPct = 100 - (player.dashCd / Config.DASH_COOLDOWN) * 100;
-        dom.dashFill.style.width = readyPct.toFixed(1) + '%';
-        dom.dashLabel.textContent = player.dashCd.toFixed(1) + 's';
-        dom.skillDash.classList.remove('ready');
+        setScaleX(dom.dashFill, 1 - player.dashCd / Config.DASH_COOLDOWN);
+        setText(dom.dashLabel, player.dashCd.toFixed(1) + 's');
+        setToggle(dom.skillDash, 'ready', false);
       } else if (player.electronCount < Config.DASH_MIN_ELECTRONS) {
-        dom.dashFill.style.width = '0%';
-        dom.dashLabel.textContent = 'Min ' + Config.DASH_MIN_ELECTRONS + ' ⚡';
-        dom.skillDash.classList.remove('ready');
+        setScaleX(dom.dashFill, 0);
+        setText(dom.dashLabel, 'Min ' + Config.DASH_MIN_ELECTRONS + ' ⚡');
+        setToggle(dom.skillDash, 'ready', false);
       } else {
-        dom.dashFill.style.width = '100%';
-        dom.dashLabel.textContent = 'Prêt';
-        dom.skillDash.classList.add('ready');
+        setScaleX(dom.dashFill, 1);
+        setText(dom.dashLabel, 'Prêt');
+        setToggle(dom.skillDash, 'ready', true);
       }
     } else {
-      dom.zoneWarningBanner.classList.add('hidden');
-      if (dom.reactorBadge) dom.reactorBadge.classList.add('hidden');
+      setHidden(dom.zoneWarningBanner, true);
+      if (dom.reactorBadge) setHidden(dom.reactorBadge, true);
       if (st.mode === 'SPECTATING' && st.spectateTarget && dom.spectateName) {
-        dom.spectateName.textContent = st.spectateTarget.name + ' (⚡ ' + st.spectateTarget.electronCount + ')';
+        setText(dom.spectateName, st.spectateTarget.name + ' (⚡ ' + st.spectateTarget.electronCount + ')');
       }
     }
 
