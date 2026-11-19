@@ -16,23 +16,51 @@
     this.zoom = 1;
     this.shakeTime = 0;
     this.shakeMag = 0;
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     this.width = window.innerWidth;
     this.height = window.innerHeight;
+    this.bgGrad = null;
 
     this.electronSprites = [];
     this.quarkSprites = [];
+    this.nucleusSprites = [];
+    this.nucleusHitSprites = [];
+    this.streakColors = [];
+    this.nucleusRimColors = [];
+    this.ringColors = [];
+    this._streakBuckets = [];
+    for (var sb = 0; sb < HUE_BUCKETS; sb++) {
+      this._streakBuckets.push([]);
+    }
+    this._tetherPool = [];
+    this._tetherPts = [];
     this.clusterSprite = null;
-    this.stars = [];
+    this.pillarSprite = null;
+    this.reactorSprite = null;
+    this.superReactorSprite = null;
+    this.starGroups = [[], [], []];
+    this.starGroupColors = [
+      'rgba(180, 225, 255, 0.45)',
+      'rgba(215, 195, 255, 0.35)',
+      'rgba(195, 215, 255, 0.60)'
+    ];
 
     this._initSprites();
     this._initStars();
     this.resize();
   }
 
+  function _compareTetherPts(a, b) {
+    return a.a - b.a;
+  }
+
   Renderer.prototype._initSprites = function () {
     for (var b = 0; b < HUE_BUCKETS; b++) {
       var hue = Math.round((b / HUE_BUCKETS) * 360);
+
+      this.streakColors.push('hsla(' + hue + ', 100%, 72%, 0.45)');
+      this.nucleusRimColors.push('hsla(' + hue + ', 100%, 85%, 0.85)');
+      this.ringColors.push('hsla(' + hue + ', 100%, 75%, 0.35)');
 
       // Electron 32x32 neon sprite
       var eCanvas = document.createElement('canvas');
@@ -60,6 +88,51 @@
       qCtx.fillStyle = qg;
       qCtx.fillRect(0, 0, 16, 16);
       this.quarkSprites.push(qCanvas);
+
+      // Nucleus normal 128x128 pre-baked sprite (coreR = 28, auraR = 60.2)
+      var nCanvas = document.createElement('canvas');
+      nCanvas.width = 128;
+      nCanvas.height = 128;
+      var nCtx = nCanvas.getContext('2d');
+      var nAura = nCtx.createRadialGradient(64, 64, 11.2, 64, 64, 60.2);
+      nAura.addColorStop(0, 'hsla(' + hue + ', 100%, 62%, 0.38)');
+      nAura.addColorStop(0.55, 'hsla(' + hue + ', 100%, 52%, 0.12)');
+      nAura.addColorStop(1, 'hsla(' + hue + ', 100%, 50%, 0)');
+      nCtx.fillStyle = nAura;
+      nCtx.beginPath();
+      nCtx.arc(64, 64, 60.2, 0, Math.PI * 2);
+      nCtx.fill();
+
+      var nCore = nCtx.createRadialGradient(64 - 7, 64 - 7, 2.8, 64, 64, 28);
+      nCore.addColorStop(0, '#ffffff');
+      nCore.addColorStop(0.28, 'hsla(' + hue + ', 100%, 72%, 1)');
+      nCore.addColorStop(0.85, 'hsla(' + hue + ', 95%, 45%, 1)');
+      nCore.addColorStop(1, 'hsla(' + hue + ', 100%, 30%, 1)');
+      nCtx.fillStyle = nCore;
+      nCtx.beginPath();
+      nCtx.arc(64, 64, 28, 0, Math.PI * 2);
+      nCtx.fill();
+      this.nucleusSprites.push(nCanvas);
+
+      // Nucleus hit-flash 128x128 sprite
+      var nhCanvas = document.createElement('canvas');
+      nhCanvas.width = 128;
+      nhCanvas.height = 128;
+      var nhCtx = nhCanvas.getContext('2d');
+      nhCtx.fillStyle = nAura;
+      nhCtx.beginPath();
+      nhCtx.arc(64, 64, 60.2, 0, Math.PI * 2);
+      nhCtx.fill();
+
+      var nhCore = nhCtx.createRadialGradient(64 - 7, 64 - 7, 2.8, 64, 64, 28);
+      nhCore.addColorStop(0, '#ffffff');
+      nhCore.addColorStop(0.55, 'hsla(' + hue + ', 100%, 82%, 1)');
+      nhCore.addColorStop(1, 'hsla(' + hue + ', 100%, 55%, 1)');
+      nhCtx.fillStyle = nhCore;
+      nhCtx.beginPath();
+      nhCtx.arc(64, 64, 28, 0, Math.PI * 2);
+      nhCtx.fill();
+      this.nucleusHitSprites.push(nhCanvas);
     }
 
     // Golden high-energy cluster sprite (40x40)
@@ -75,30 +148,98 @@
     cCtx.fillStyle = cg;
     cCtx.fillRect(0, 0, 40, 40);
     this.clusterSprite = cCanvas;
+
+    // Pre-baked Pillar sprite (128x128, radius = 58)
+    var pCanvas = document.createElement('canvas');
+    pCanvas.width = 128;
+    pCanvas.height = 128;
+    var pCtx = pCanvas.getContext('2d');
+    var pr = 58;
+    var pg = pCtx.createRadialGradient(64 - pr * 0.25, 64 - pr * 0.25, pr * 0.12, 64, 64, pr);
+    pg.addColorStop(0, 'rgba(34, 52, 102, 0.95)');
+    pg.addColorStop(0.75, 'rgba(14, 22, 48, 0.96)');
+    pg.addColorStop(1, 'rgba(8, 13, 30, 0.98)');
+    pCtx.fillStyle = pg;
+    pCtx.beginPath();
+    pCtx.arc(64, 64, pr, 0, Math.PI * 2);
+    pCtx.fill();
+    pCtx.strokeStyle = 'rgba(92, 182, 255, 0.85)';
+    pCtx.lineWidth = 2.6;
+    pCtx.stroke();
+    pCtx.strokeStyle = 'rgba(165, 120, 255, 0.35)';
+    pCtx.lineWidth = 1.5;
+    pCtx.beginPath();
+    pCtx.arc(64, 64, pr * 0.62, 0, Math.PI * 2);
+    pCtx.stroke();
+    pCtx.fillStyle = 'rgba(120, 225, 255, 0.28)';
+    pCtx.beginPath();
+    pCtx.arc(64, 64, pr * 0.18, 0, Math.PI * 2);
+    pCtx.fill();
+    this.pillarSprite = pCanvas;
+
+    // Pre-baked Reactor floor glow sprites (256x256, radius = 126)
+    var rCanvas = document.createElement('canvas');
+    rCanvas.width = 256;
+    rCanvas.height = 256;
+    var rCtx = rCanvas.getContext('2d');
+    var rg = rCtx.createRadialGradient(128, 128, 6, 128, 128, 126);
+    rg.addColorStop(0, 'rgba(0, 240, 255, 0.24)');
+    rg.addColorStop(0.6, 'rgba(0, 175, 255, 0.09)');
+    rg.addColorStop(1, 'rgba(0, 140, 255, 0)');
+    rCtx.fillStyle = rg;
+    rCtx.beginPath();
+    rCtx.arc(128, 128, 126, 0, Math.PI * 2);
+    rCtx.fill();
+    this.reactorSprite = rCanvas;
+
+    var srCanvas = document.createElement('canvas');
+    srCanvas.width = 256;
+    srCanvas.height = 256;
+    var srCtx = srCanvas.getContext('2d');
+    var srg = srCtx.createRadialGradient(128, 128, 6, 128, 128, 126);
+    srg.addColorStop(0, 'rgba(255, 210, 60, 0.28)');
+    srg.addColorStop(0.6, 'rgba(255, 165, 20, 0.11)');
+    srg.addColorStop(1, 'rgba(255, 140, 0, 0)');
+    srCtx.fillStyle = srg;
+    srCtx.beginPath();
+    srCtx.arc(128, 128, 126, 0, Math.PI * 2);
+    srCtx.fill();
+    this.superReactorSprite = srCanvas;
   };
 
   Renderer.prototype._initStars = function () {
-    this.stars = [];
+    this.starGroups = [[], [], []];
     for (var i = 0; i < 240; i++) {
-      this.stars.push({
+      this.starGroups[i % 3].push({
         x: Math.random(),
         y: Math.random(),
-        size: 0.8 + Math.random() * 1.7,
-        alpha: 0.15 + Math.random() * 0.55,
-        parallax: i < 140 ? 0.08 : 0.18,
-        hue: i % 5 === 0 ? 190 : i % 7 === 0 ? 280 : 220
+        size: 0.9 + Math.random() * 1.6,
+        parallax: i < 140 ? 0.08 : 0.18
       });
     }
   };
 
   Renderer.prototype.resize = function () {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     this.width = window.innerWidth;
     this.height = window.innerHeight;
     this.canvas.width = Math.floor(this.width * this.dpr);
     this.canvas.height = Math.floor(this.height * this.dpr);
     this.canvas.style.width = this.width + 'px';
     this.canvas.style.height = this.height + 'px';
+
+    var g = this.ctx.createRadialGradient(
+      this.width * 0.5,
+      this.height * 0.5,
+      40,
+      this.width * 0.5,
+      this.height * 0.5,
+      Math.max(this.width, this.height) * 0.85
+    );
+    g.addColorStop(0, '#091128');
+    g.addColorStop(0.55, '#050816');
+    g.addColorStop(1, '#02040a');
+    this.bgGrad = g;
   };
 
   Renderer.prototype.addShake = function (mag, dur) {
@@ -167,22 +308,20 @@
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // 1. Deep space background
-    var bgGrad = ctx.createRadialGradient(w * 0.5, h * 0.5, 40, w * 0.5, h * 0.5, Math.max(w, h) * 0.85);
-    bgGrad.addColorStop(0, '#091128');
-    bgGrad.addColorStop(0.55, '#050816');
-    bgGrad.addColorStop(1, '#02040a');
-    ctx.fillStyle = bgGrad;
+    // 1. Deep space background (cached gradient)
+    ctx.fillStyle = this.bgGrad;
     ctx.fillRect(0, 0, w, h);
 
-    // 2. Parallax Starfield
-    for (var s = 0; s < this.stars.length; s++) {
-      var star = this.stars[s];
-      var sx = ((star.x * w - this.camX * star.parallax) % w + w) % w;
-      var sy = ((star.y * h - this.camY * star.parallax) % h + h) % h;
-      var twinkle = 0.72 + 0.28 * Math.sin(time * 2.2 + s);
-      ctx.fillStyle = 'hsla(' + star.hue + ', 80%, 82%, ' + (star.alpha * twinkle).toFixed(3) + ')';
-      ctx.fillRect(sx, sy, star.size, star.size);
+    // 2. Parallax Starfield (batched in 3 static color groups)
+    for (var gIdx = 0; gIdx < 3; gIdx++) {
+      var grp = this.starGroups[gIdx];
+      ctx.fillStyle = this.starGroupColors[gIdx];
+      for (var s = 0; s < grp.length; s++) {
+        var star = grp[s];
+        var sx = ((star.x * w - this.camX * star.parallax) % w + w) % w;
+        var sy = ((star.y * h - this.camY * star.parallax) % h + h) % h;
+        ctx.fillRect(sx, sy, star.size, star.size);
+      }
     }
 
     // Camera shake offset
@@ -220,8 +359,8 @@
     ctx.lineWidth = 4;
     ctx.stroke();
 
-    // Quantum Shrinking Zone overlay
-    this._drawZone(ctx, state.zone, time);
+    // Quantum Shrinking Zone overlay (viewport-clipped)
+    this._drawZone(ctx, state.zone, time, viewMinX, viewMaxX, viewMinY, viewMaxY);
 
     // World obstacles & energy reactors
     if (state.world) {
@@ -295,17 +434,29 @@
     ctx.stroke();
   };
 
-  Renderer.prototype._drawZone = function (ctx, zone, time) {
-    var outer = Config.ARENA_RADIUS + 1800;
+  Renderer.prototype._drawZone = function (ctx, zone, time, minX, maxX, minY, maxY) {
+    var zr = Math.max(10, zone.radius);
+    var zrSq = zr * zr;
+    var dxMin = minX - zone.x;
+    var dxMax = maxX - zone.x;
+    var dyMin = minY - zone.y;
+    var dyMax = maxY - zone.y;
+    var allInside =
+      dxMin * dxMin + dyMin * dyMin < zrSq &&
+      dxMax * dxMax + dyMin * dyMin < zrSq &&
+      dxMin * dxMin + dyMax * dyMax < zrSq &&
+      dxMax * dxMax + dyMax * dyMax < zrSq;
 
-    // Dim crimson tint outside current safe circle using even-odd fill
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(-outer, -outer, outer * 2, outer * 2);
-    ctx.arc(zone.x, zone.y, Math.max(10, zone.radius), 0, Math.PI * 2, true);
-    ctx.fillStyle = 'rgba(255, 22, 85, 0.14)';
-    ctx.fill('evenodd');
-    ctx.restore();
+    // Dim crimson tint outside current safe circle (only when viewport intersects edge)
+    if (!allInside) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(minX, minY, maxX - minX, maxY - minY);
+      ctx.arc(zone.x, zone.y, zr, 0, Math.PI * 2, true);
+      ctx.fillStyle = 'rgba(255, 22, 85, 0.14)';
+      ctx.fill('evenodd');
+      ctx.restore();
+    }
 
     // Next safe zone dashed preview
     if (zone.state !== 'FINAL' && Math.abs(zone.targetRadius - zone.radius) > 4) {
@@ -344,20 +495,9 @@
       var ez = zones[i];
       if (ez.x + ez.r < minX || ez.x - ez.r > maxX || ez.y + ez.r < minY || ez.y - ez.r > maxY) continue;
 
-      var grad = ctx.createRadialGradient(ez.x, ez.y, 16, ez.x, ez.y, ez.r);
-      if (ez.isSuper) {
-        grad.addColorStop(0, 'rgba(255, 210, 60, 0.28)');
-        grad.addColorStop(0.6, 'rgba(255, 165, 20, 0.11)');
-        grad.addColorStop(1, 'rgba(255, 140, 0, 0)');
-      } else {
-        grad.addColorStop(0, 'rgba(0, 240, 255, 0.24)');
-        grad.addColorStop(0.6, 'rgba(0, 175, 255, 0.09)');
-        grad.addColorStop(1, 'rgba(0, 140, 255, 0)');
-      }
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(ez.x, ez.y, ez.r, 0, Math.PI * 2);
-      ctx.fill();
+      var ezSprite = ez.isSuper ? this.superReactorSprite : this.reactorSprite;
+      var ezDraw = (256 / 126) * ez.r;
+      ctx.drawImage(ezSprite, ez.x - ezDraw * 0.5, ez.y - ezDraw * 0.5, ezDraw, ezDraw);
 
       ctx.save();
       ctx.setLineDash([12, 10]);
@@ -417,35 +557,13 @@
       }
     }
 
-    // 3. Monolith Pillars
+    // 3. Monolith Pillars (pre-baked sprite)
     var pillars = world.pillars;
     for (i = 0; i < pillars.length; i++) {
       var p = pillars[i];
       if (p.x + p.r < minX || p.x - p.r > maxX || p.y + p.r < minY || p.y - p.r > maxY) continue;
-
-      var pGrad = ctx.createRadialGradient(p.x - p.r * 0.25, p.y - p.r * 0.25, p.r * 0.12, p.x, p.y, p.r);
-      pGrad.addColorStop(0, 'rgba(34, 52, 102, 0.95)');
-      pGrad.addColorStop(0.75, 'rgba(14, 22, 48, 0.96)');
-      pGrad.addColorStop(1, 'rgba(8, 13, 30, 0.98)');
-      ctx.fillStyle = pGrad;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.strokeStyle = 'rgba(92, 182, 255, 0.85)';
-      ctx.lineWidth = 2.6;
-      ctx.stroke();
-
-      ctx.strokeStyle = 'rgba(165, 120, 255, 0.35)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r * 0.62, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.fillStyle = 'rgba(120, 225, 255, 0.28)';
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.r * 0.18, 0, Math.PI * 2);
-      ctx.fill();
+      var pSize = (128 / 58) * p.r;
+      ctx.drawImage(this.pillarSprite, p.x - pSize * 0.5, p.y - pSize * 0.5, pSize, pSize);
     }
   };
 
@@ -536,7 +654,9 @@
   };
 
   Renderer.prototype._drawShieldTethers = function (ctx, player, pool) {
-    var pts = [];
+    var pts = this._tetherPts;
+    var tPool = this._tetherPool;
+    var count = 0;
     var high = pool.highWater;
     var active = pool.active;
     var oid = pool.ownerId;
@@ -544,17 +664,24 @@
     var py = pool.y;
     for (var i = 0; i < high; i++) {
       if (active[i] && oid[i] === player.id) {
-        pts.push({ x: px[i], y: py[i], a: Math.atan2(py[i] - player.y, px[i] - player.x) });
+        if (count >= tPool.length) tPool.push({ x: 0, y: 0, a: 0 });
+        var pt = tPool[count];
+        pt.x = px[i];
+        pt.y = py[i];
+        pt.a = Math.atan2(py[i] - player.y, px[i] - player.x);
+        pts[count] = pt;
+        count++;
       }
     }
-    if (pts.length < 3) return;
-    pts.sort(function (a, b) { return a.a - b.a; });
+    pts.length = count;
+    if (count < 3) return;
+    pts.sort(_compareTetherPts);
     ctx.save();
     ctx.strokeStyle = 'hsla(' + player.hue + ', 100%, 75%, 0.25)';
     ctx.lineWidth = 1.4;
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
-    for (var k = 1; k < pts.length; k++) {
+    for (var k = 1; k < count; k++) {
       ctx.lineTo(pts[k].x, pts[k].y);
     }
     ctx.closePath();
@@ -570,37 +697,41 @@
     var prevX = pool.prevX;
     var prevY = pool.prevY;
     var oid = pool.ownerId;
+    var buckets = this._streakBuckets;
+    var b;
+    for (b = 0; b < HUE_BUCKETS; b++) {
+      buckets[b].length = 0;
+    }
 
-    // Motion streaks first
-    ctx.lineWidth = 2;
+    // Single pass: collect batched streaks & draw electron sprites
     for (var i = 0; i < high; i++) {
       if (!active[i]) continue;
       var ex = x[i];
       var ey = y[i];
       if (ex < minX || ex > maxX || ey < minY || ey > maxY) continue;
       var owner = nuclei[oid[i]];
-      var hue = owner ? owner.hue : 188;
+      var bucket = this._hueBucket(owner ? owner.hue : 188);
 
       var dx = ex - prevX[i];
       var dy = ey - prevY[i];
       if (dx * dx + dy * dy > 1.5) {
-        ctx.strokeStyle = 'hsla(' + hue + ', 100%, 72%, 0.45)';
-        ctx.beginPath();
-        ctx.moveTo(ex - dx * 1.4, ey - dy * 1.4);
-        ctx.lineTo(ex, ey);
-        ctx.stroke();
+        buckets[bucket].push(ex - dx * 1.4, ey - dy * 1.4, ex, ey);
       }
+      ctx.drawImage(this.electronSprites[bucket], ex - 11, ey - 11, 22, 22);
     }
 
-    // Glowing sprites
-    for (var j = 0; j < high; j++) {
-      if (!active[j]) continue;
-      var sx = x[j];
-      var sy = y[j];
-      if (sx < minX || sx > maxX || sy < minY || sy > maxY) continue;
-      var ow = nuclei[oid[j]];
-      var bucket = this._hueBucket(ow ? ow.hue : 188);
-      ctx.drawImage(this.electronSprites[bucket], sx - 11, sy - 11, 22, 22);
+    // Flush batched motion streaks per hue bucket
+    ctx.lineWidth = 2;
+    for (b = 0; b < HUE_BUCKETS; b++) {
+      var arr = buckets[b];
+      if (arr.length === 0) continue;
+      ctx.strokeStyle = this.streakColors[b];
+      ctx.beginPath();
+      for (var k = 0; k < arr.length; k += 4) {
+        ctx.moveTo(arr[k], arr[k + 1]);
+        ctx.lineTo(arr[k + 2], arr[k + 3]);
+      }
+      ctx.stroke();
     }
   };
 
@@ -629,12 +760,12 @@
       if (!s.active) continue;
       if (s.x < minX || s.x > maxX || s.y < minY || s.y > maxY) continue;
       var alpha = Math.max(0, s.life / s.maxLife);
-      var light = Math.round(62 + s.whiteMix * 36);
-      ctx.fillStyle = 'hsla(' + s.hue + ', 100%, ' + light + '%, ' + alpha.toFixed(3) + ')';
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, s.size * (0.4 + alpha * 0.7), 0, Math.PI * 2);
-      ctx.fill();
+      var bucket = this._hueBucket(s.hue);
+      var sz = s.size * (2.6 + alpha * 1.4);
+      ctx.globalAlpha = alpha;
+      ctx.drawImage(this.quarkSprites[bucket], s.x - sz * 0.5, s.y - sz * 0.5, sz, sz);
     }
+    ctx.globalAlpha = 1;
     ctx.restore();
   };
 
@@ -675,23 +806,18 @@
       var nx = n.x + jx;
       var ny = n.y + jy;
       var r = n.radius;
+      var bucket = this._hueBucket(n.hue);
 
-      // 1. Outer plasma aura
-      var auraR = r * 2.15;
-      var aura = ctx.createRadialGradient(nx, ny, r * 0.4, nx, ny, auraR);
-      aura.addColorStop(0, 'hsla(' + n.hue + ', 100%, 62%, 0.38)');
-      aura.addColorStop(0.55, 'hsla(' + n.hue + ', 100%, 52%, 0.12)');
-      aura.addColorStop(1, 'hsla(' + n.hue + ', 100%, 50%, 0)');
-      ctx.fillStyle = aura;
-      ctx.beginPath();
-      ctx.arc(nx, ny, auraR, 0, Math.PI * 2);
-      ctx.fill();
+      // 1 & 2. Pre-baked outer plasma aura + core sphere sprite
+      var nSprite = n.hitFlash > 0.1 ? this.nucleusHitSprites[bucket] : this.nucleusSprites[bucket];
+      var nDrawSize = (128 / 28) * r;
+      ctx.drawImage(nSprite, nx - nDrawSize * 0.5, ny - nDrawSize * 0.5, nDrawSize, nDrawSize);
 
-      // 2. Rotating inner atomic rings
+      // 3. Rotating inner atomic rings
       ctx.save();
       ctx.translate(nx, ny);
       ctx.rotate(time * 1.4 + n.id);
-      ctx.strokeStyle = 'hsla(' + n.hue + ', 100%, 75%, 0.35)';
+      ctx.strokeStyle = this.ringColors[bucket];
       ctx.lineWidth = 1.4;
       ctx.beginPath();
       ctx.ellipse(0, 0, r * 1.28, r * 0.55, 0, 0, Math.PI * 2);
@@ -702,25 +828,10 @@
       ctx.stroke();
       ctx.restore();
 
-      // 3. Core plasma sphere
-      var coreGrad = ctx.createRadialGradient(nx - r * 0.25, ny - r * 0.25, r * 0.1, nx, ny, r);
-      if (n.hitFlash > 0.1) {
-        coreGrad.addColorStop(0, '#ffffff');
-        coreGrad.addColorStop(0.55, 'hsla(' + n.hue + ', 100%, 82%, 1)');
-        coreGrad.addColorStop(1, 'hsla(' + n.hue + ', 100%, 55%, 1)');
-      } else {
-        coreGrad.addColorStop(0, '#ffffff');
-        coreGrad.addColorStop(0.28, 'hsla(' + n.hue + ', 100%, 72%, 1)');
-        coreGrad.addColorStop(0.85, 'hsla(' + n.hue + ', 95%, 45%, 1)');
-        coreGrad.addColorStop(1, 'hsla(' + n.hue + ', 100%, 30%, 1)');
-      }
-      ctx.fillStyle = coreGrad;
+      // Crisp inner rim (+ distinct white highlight ring for player among teammates)
       ctx.beginPath();
       ctx.arc(nx, ny, r, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Crisp inner rim (+ distinct white highlight ring for player among teammates)
-      ctx.strokeStyle = n.isPlayer ? '#ffffff' : 'hsla(' + n.hue + ', 100%, 85%, 0.85)';
+      ctx.strokeStyle = n.isPlayer ? '#ffffff' : this.nucleusRimColors[bucket];
       ctx.lineWidth = n.isPlayer ? 2.6 : 1.6;
       ctx.stroke();
 
@@ -798,7 +909,11 @@
 
       // Threat comparison dot / ally diamond next to AI name
       if (!n.isPlayer && player && player.alive) {
-        var textW = ctx.measureText(labelText).width;
+        if (n._labelCache !== labelText) {
+          n._labelCache = labelText;
+          n._labelWidth = ctx.measureText(labelText).width;
+        }
+        var textW = n._labelWidth;
         var badgeX = nx - textW * 0.5 - 9;
         var badgeY = labelY - 4;
         if (Entities.areAllies(player, n)) {

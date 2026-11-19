@@ -39,7 +39,10 @@
       seed: s,
       walls: [],
       pillars: [],
-      energyZones: []
+      energyZones: [],
+      _obsGridW: null,
+      _obsGridP: null,
+      _visitStamp: 0
     };
 
     if (meta.id === 'maze') {
@@ -50,7 +53,72 @@
       _buildNexus(world);
     }
 
+    _buildObstacleGrid(world);
+
     return world;
+  }
+
+  var OBS_MIN = -3520;
+  var OBS_CELL = 320;
+  var OBS_INV_CELL = 1 / 320;
+  var OBS_DIM = 22;
+
+  function _obsClampCell(v) {
+    var c = ((v - OBS_MIN) * OBS_INV_CELL) | 0;
+    if (c < 0) return 0;
+    if (c >= OBS_DIM) return OBS_DIM - 1;
+    return c;
+  }
+
+  function _buildObstacleGrid(world) {
+    var walls = world.walls;
+    var pillars = world.pillars;
+    if (walls.length === 0 && pillars.length === 0) return;
+
+    var total = OBS_DIM * OBS_DIM;
+    var gridW = new Array(total);
+    var gridP = new Array(total);
+    var i, cx, cy, cell;
+    for (i = 0; i < total; i++) {
+      gridW[i] = null;
+      gridP[i] = null;
+    }
+
+    for (i = 0; i < walls.length; i++) {
+      var w = walls[i];
+      w._stamp = 0;
+      var minX = _obsClampCell(w.x - 12);
+      var maxX = _obsClampCell(w.x + w.w + 12);
+      var minY = _obsClampCell(w.y - 12);
+      var maxY = _obsClampCell(w.y + w.h + 12);
+      for (cy = minY; cy <= maxY; cy++) {
+        for (cx = minX; cx <= maxX; cx++) {
+          cell = cy * OBS_DIM + cx;
+          if (!gridW[cell]) gridW[cell] = [];
+          gridW[cell].push(w);
+        }
+      }
+    }
+
+    for (i = 0; i < pillars.length; i++) {
+      var p = pillars[i];
+      p._stamp = 0;
+      var pad = p.r + 12;
+      var pMinX = _obsClampCell(p.x - pad);
+      var pMaxX = _obsClampCell(p.x + pad);
+      var pMinY = _obsClampCell(p.y - pad);
+      var pMaxY = _obsClampCell(p.y + pad);
+      for (cy = pMinY; cy <= pMaxY; cy++) {
+        for (cx = pMinX; cx <= pMaxX; cx++) {
+          cell = cy * OBS_DIM + cx;
+          if (!gridP[cell]) gridP[cell] = [];
+          gridP[cell].push(p);
+        }
+      }
+    }
+
+    world._obsGridW = gridW;
+    world._obsGridP = gridP;
   }
 
   function _rectIntersectsCircle(rx, ry, rw, rh, cx, cy, cr) {
@@ -266,27 +334,45 @@
 
   function isBlocked(world, x, y, margin) {
     if (!world) return false;
+    var walls = world.walls;
+    var pillars = world.pillars;
+    if (walls.length === 0 && pillars.length === 0) return false;
+
     var m = margin || 0;
     var mSq = m * m;
-    var walls = world.walls;
-    var i;
+    var gridW = world._obsGridW;
+    var gridP = world._obsGridP;
+    var minX = _obsClampCell(x - m);
+    var maxX = _obsClampCell(x + m);
+    var minY = _obsClampCell(y - m);
+    var maxY = _obsClampCell(y + m);
+    var cy, cx, cell, list, i;
 
-    for (i = 0; i < walls.length; i++) {
-      var w = walls[i];
-      var cx = x < w.x ? w.x : x > w.x + w.w ? w.x + w.w : x;
-      var cy = y < w.y ? w.y : y > w.y + w.h ? w.y + w.h : y;
-      var dx = x - cx;
-      var dy = y - cy;
-      if (dx * dx + dy * dy < mSq) return true;
-    }
-
-    var pillars = world.pillars;
-    for (i = 0; i < pillars.length; i++) {
-      var p = pillars[i];
-      var pdx = x - p.x;
-      var pdy = y - p.y;
-      var rad = p.r + m;
-      if (pdx * pdx + pdy * pdy < rad * rad) return true;
+    for (cy = minY; cy <= maxY; cy++) {
+      for (cx = minX; cx <= maxX; cx++) {
+        cell = cy * OBS_DIM + cx;
+        list = gridW ? gridW[cell] : null;
+        if (list) {
+          for (i = 0; i < list.length; i++) {
+            var w = list[i];
+            var closeX = x < w.x ? w.x : x > w.x + w.w ? w.x + w.w : x;
+            var closeY = y < w.y ? w.y : y > w.y + w.h ? w.y + w.h : y;
+            var dx = x - closeX;
+            var dy = y - closeY;
+            if (dx * dx + dy * dy < mSq) return true;
+          }
+        }
+        list = gridP ? gridP[cell] : null;
+        if (list) {
+          for (i = 0; i < list.length; i++) {
+            var p = list[i];
+            var pdx = x - p.x;
+            var pdy = y - p.y;
+            var rad = p.r + m;
+            if (pdx * pdx + pdy * pdy < rad * rad) return true;
+          }
+        }
+      }
     }
 
     return false;
@@ -335,37 +421,61 @@
 
   function resolveCircle(world, obj, radius, bounceDamp) {
     if (!world) return false;
-    var hit = false;
     var walls = world.walls;
-    var i;
-
-    for (i = 0; i < walls.length; i++) {
-      if (_pushOutOfRect(obj, walls[i], radius, bounceDamp)) {
-        hit = true;
-      }
-    }
-
     var pillars = world.pillars;
-    for (i = 0; i < pillars.length; i++) {
-      var p = pillars[i];
-      var dx = obj.x - p.x;
-      var dy = obj.y - p.y;
-      var minDist = radius + p.r;
-      var dSq = dx * dx + dy * dy;
-      if (dSq < minDist * minDist) {
-        var d = Math.sqrt(dSq) || 0.01;
-        var nx = dx / d;
-        var ny = dy / d;
-        var pen = minDist - d;
-        obj.x += nx * pen;
-        obj.y += ny * pen;
-        var vn = obj.vx * nx + obj.vy * ny;
-        if (vn < 0) {
-          var factor = 1 + (bounceDamp || 0);
-          obj.vx -= vn * nx * factor;
-          obj.vy -= vn * ny * factor;
+    if (walls.length === 0 && pillars.length === 0) return false;
+
+    var hit = false;
+    var stamp = ++world._visitStamp;
+    var gridW = world._obsGridW;
+    var gridP = world._obsGridP;
+    var minX = _obsClampCell(obj.x - radius);
+    var maxX = _obsClampCell(obj.x + radius);
+    var minY = _obsClampCell(obj.y - radius);
+    var maxY = _obsClampCell(obj.y + radius);
+    var cy, cx, cell, list, i;
+
+    for (cy = minY; cy <= maxY; cy++) {
+      for (cx = minX; cx <= maxX; cx++) {
+        cell = cy * OBS_DIM + cx;
+        list = gridW ? gridW[cell] : null;
+        if (list) {
+          for (i = 0; i < list.length; i++) {
+            var w = list[i];
+            if (w._stamp === stamp) continue;
+            w._stamp = stamp;
+            if (_pushOutOfRect(obj, w, radius, bounceDamp)) {
+              hit = true;
+            }
+          }
         }
-        hit = true;
+        list = gridP ? gridP[cell] : null;
+        if (list) {
+          for (i = 0; i < list.length; i++) {
+            var p = list[i];
+            if (p._stamp === stamp) continue;
+            p._stamp = stamp;
+            var dx = obj.x - p.x;
+            var dy = obj.y - p.y;
+            var minDist = radius + p.r;
+            var dSq = dx * dx + dy * dy;
+            if (dSq < minDist * minDist) {
+              var d = Math.sqrt(dSq) || 0.01;
+              var nx = dx / d;
+              var ny = dy / d;
+              var pen = minDist - d;
+              obj.x += nx * pen;
+              obj.y += ny * pen;
+              var vn = obj.vx * nx + obj.vy * ny;
+              if (vn < 0) {
+                var factor = 1 + (bounceDamp || 0);
+                obj.vx -= vn * nx * factor;
+                obj.vy -= vn * ny * factor;
+              }
+              hit = true;
+            }
+          }
+        }
       }
     }
 
@@ -374,75 +484,84 @@
 
   function resolveElectron(world, pool, idx) {
     if (!world) return false;
-    var walls = world.walls;
-    var pillars = world.pillars;
-    if (walls.length === 0 && pillars.length === 0) return false;
+    var gridW = world._obsGridW;
+    var gridP = world._obsGridP;
+    if (!gridW && !gridP) return false;
+
+    var ex = pool.x[idx];
+    var ey = pool.y[idx];
+    var cell = _obsClampCell(ey) * OBS_DIM + _obsClampCell(ex);
+    var wList = gridW ? gridW[cell] : null;
+    var pList = gridP ? gridP[cell] : null;
+    if (!wList && !pList) return false;
 
     var r = Config.ELECTRON_RADIUS;
     var rSq = r * r;
-    var ex = pool.x[idx];
-    var ey = pool.y[idx];
     var evx = pool.vx[idx];
     var evy = pool.vy[idx];
     var hit = false;
     var i;
 
-    for (i = 0; i < walls.length; i++) {
-      var w = walls[i];
-      var cx = ex < w.x ? w.x : ex > w.x + w.w ? w.x + w.w : ex;
-      var cy = ey < w.y ? w.y : ey > w.y + w.h ? w.y + w.h : ey;
-      var dx = ex - cx;
-      var dy = ey - cy;
-      var dSq = dx * dx + dy * dy;
-      if (dSq < rSq) {
-        var nx, ny, pen;
-        if (dSq > 0.0001) {
-          var d = Math.sqrt(dSq);
-          nx = dx / d;
-          ny = dy / d;
-          pen = r - d;
-        } else {
-          var dLeft = ex - w.x;
-          var dRight = w.x + w.w - ex;
-          var dTop = ey - w.y;
-          var dBottom = w.y + w.h - ey;
-          var minEdge = dLeft;
-          nx = -1; ny = 0;
-          if (dRight < minEdge) { minEdge = dRight; nx = 1; ny = 0; }
-          if (dTop < minEdge) { minEdge = dTop; nx = 0; ny = -1; }
-          if (dBottom < minEdge) { minEdge = dBottom; nx = 0; ny = 1; }
-          pen = r + minEdge;
+    if (wList) {
+      for (i = 0; i < wList.length; i++) {
+        var w = wList[i];
+        var cx = ex < w.x ? w.x : ex > w.x + w.w ? w.x + w.w : ex;
+        var cy = ey < w.y ? w.y : ey > w.y + w.h ? w.y + w.h : ey;
+        var dx = ex - cx;
+        var dy = ey - cy;
+        var dSq = dx * dx + dy * dy;
+        if (dSq < rSq) {
+          var nx, ny, pen;
+          if (dSq > 0.0001) {
+            var d = Math.sqrt(dSq);
+            nx = dx / d;
+            ny = dy / d;
+            pen = r - d;
+          } else {
+            var dLeft = ex - w.x;
+            var dRight = w.x + w.w - ex;
+            var dTop = ey - w.y;
+            var dBottom = w.y + w.h - ey;
+            var minEdge = dLeft;
+            nx = -1; ny = 0;
+            if (dRight < minEdge) { minEdge = dRight; nx = 1; ny = 0; }
+            if (dTop < minEdge) { minEdge = dTop; nx = 0; ny = -1; }
+            if (dBottom < minEdge) { minEdge = dBottom; nx = 0; ny = 1; }
+            pen = r + minEdge;
+          }
+          ex += nx * pen;
+          ey += ny * pen;
+          var vn = evx * nx + evy * ny;
+          if (vn < 0) {
+            evx -= vn * nx * 1.45;
+            evy -= vn * ny * 1.45;
+          }
+          hit = true;
         }
-        ex += nx * pen;
-        ey += ny * pen;
-        var vn = evx * nx + evy * ny;
-        if (vn < 0) {
-          evx -= vn * nx * 1.45;
-          evy -= vn * ny * 1.45;
-        }
-        hit = true;
       }
     }
 
-    for (i = 0; i < pillars.length; i++) {
-      var p = pillars[i];
-      var pdx = ex - p.x;
-      var pdy = ey - p.y;
-      var minD = r + p.r;
-      var pdSq = pdx * pdx + pdy * pdy;
-      if (pdSq < minD * minD) {
-        var pd = Math.sqrt(pdSq) || 0.01;
-        var pnx = pdx / pd;
-        var pny = pdy / pd;
-        var ppen = minD - pd;
-        ex += pnx * ppen;
-        ey += pny * ppen;
-        var pvn = evx * pnx + evy * pny;
-        if (pvn < 0) {
-          evx -= pvn * pnx * 1.45;
-          evy -= pvn * pny * 1.45;
+    if (pList) {
+      for (i = 0; i < pList.length; i++) {
+        var p = pList[i];
+        var pdx = ex - p.x;
+        var pdy = ey - p.y;
+        var minD = r + p.r;
+        var pdSq = pdx * pdx + pdy * pdy;
+        if (pdSq < minD * minD) {
+          var pd = Math.sqrt(pdSq) || 0.01;
+          var pnx = pdx / pd;
+          var pny = pdy / pd;
+          var ppen = minD - pd;
+          ex += pnx * ppen;
+          ey += pny * ppen;
+          var pvn = evx * pnx + evy * pny;
+          if (pvn < 0) {
+            evx -= pvn * pnx * 1.45;
+            evy -= pvn * pny * 1.45;
+          }
+          hit = true;
         }
-        hit = true;
       }
     }
 
@@ -455,31 +574,39 @@
     return hit;
   }
 
+  var _boostOut = { prodMult: 1, regenMult: 1, inZone: false, isSuper: false };
+
   function getEnergyBoost(world, x, y) {
-    var result = { prodMult: 1, regenMult: 1, inZone: false, isSuper: false };
-    if (!world || world.energyZones.length === 0) return result;
+    _boostOut.prodMult = 1;
+    _boostOut.regenMult = 1;
+    _boostOut.inZone = false;
+    _boostOut.isSuper = false;
+    if (!world || world.energyZones.length === 0) return _boostOut;
     var zones = world.energyZones;
     for (var i = 0; i < zones.length; i++) {
       var z = zones[i];
       var dx = x - z.x;
       var dy = y - z.y;
       if (dx * dx + dy * dy <= z.r * z.r) {
-        if (z.prodMult > result.prodMult) {
-          result.prodMult = z.prodMult;
-          result.regenMult = z.regenMult;
-          result.inZone = true;
-          result.isSuper = !!z.isSuper;
+        if (z.prodMult > _boostOut.prodMult) {
+          _boostOut.prodMult = z.prodMult;
+          _boostOut.regenMult = z.regenMult;
+          _boostOut.inZone = true;
+          _boostOut.isSuper = !!z.isSuper;
         }
       }
     }
-    return result;
+    return _boostOut;
   }
 
   var STEER_ANGLES = [0.7, -0.7, 1.4, -1.4, 2.1, -2.1]; // ~±40°, ±80°, ±120°
+  var _steerOut = { x: 0, y: 0 };
 
   function steerAroundObstacles(world, x, y, dirX, dirY, radius) {
     if (!world || (world.walls.length === 0 && world.pillars.length === 0)) {
-      return { x: dirX, y: dirY };
+      _steerOut.x = dirX;
+      _steerOut.y = dirY;
+      return _steerOut;
     }
     var look = radius + 82;
     var margin = radius + 8;
@@ -488,7 +615,9 @@
       !isBlocked(world, x + dirX * look, y + dirY * look, margin) &&
       !isBlocked(world, x + dirX * (look * 0.55), y + dirY * (look * 0.55), margin * 0.85)
     ) {
-      return { x: dirX, y: dirY };
+      _steerOut.x = dirX;
+      _steerOut.y = dirY;
+      return _steerOut;
     }
 
     var baseAng = Math.atan2(dirY, dirX);
@@ -500,11 +629,15 @@
         !isBlocked(world, x + tx * look, y + ty * look, margin) &&
         !isBlocked(world, x + tx * (look * 0.5), y + ty * (look * 0.5), margin * 0.85)
       ) {
-        return { x: tx, y: ty };
+        _steerOut.x = tx;
+        _steerOut.y = ty;
+        return _steerOut;
       }
     }
 
-    return { x: dirX, y: dirY };
+    _steerOut.x = dirX;
+    _steerOut.y = dirY;
+    return _steerOut;
   }
 
   NUCLEON.Worlds = {

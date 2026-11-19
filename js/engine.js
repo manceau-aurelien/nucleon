@@ -91,6 +91,11 @@
 
     this.hudAccum = 0;
     this.lastFrameTime = 0;
+    this._nearestEnemy = new Int16Array(64);
+    this._shieldingList = [];
+    this._aliveScratch = [];
+    this._lastLbHtml = '';
+    this._lastKfHtml = '';
     this._dom = this._cacheDom();
     this._loadBestRecord();
     this._bindEvents();
@@ -1456,18 +1461,38 @@
     var pool = st.electrons;
     var nuclei = st.nuclei;
     var spatial = st.spatial;
-    spatial.clear();
+
+    var high = pool.highWater;
+    var active = pool.active;
+    var oid = pool.ownerId;
+    var shell = pool.shell;
+    var px = pool.x;
+    var py = pool.y;
+    var prevX = pool.prevX;
+    var prevY = pool.prevY;
+    var vx = pool.vx;
+    var vy = pool.vy;
+    var orbitAngle = pool.orbitAngle;
+    var orbitDir = pool.orbitDir;
+    var speedFactor = pool.speedFactor;
+    var phase = pool.phase;
+    var time = st.elapsedTime;
 
     // Precompute nearest nearby enemy per alive nucleus for local auto-aggression in ORBIT mode,
     // and collect shielding nuclei for smart electron interception
     var nLen = nuclei.length;
-    var nearestEnemy = new Int16Array(nLen);
-    var shieldingList = [];
+    if (this._nearestEnemy.length < nLen) {
+      this._nearestEnemy = new Int16Array(nLen);
+    }
+    var nearestEnemy = this._nearestEnemy;
+    var shieldingList = this._shieldingList;
+    shieldingList.length = 0;
+
     for (var k = 0; k < nLen; k++) {
       var owner = nuclei[k];
       nearestEnemy[k] = -1;
       owner.shieldThreatActive = false;
-      owner._incomingThreats.length = 0;
+      owner._threatCount = 0;
       owner._shieldSlot = 0;
       if (!owner.alive) continue;
 
@@ -1493,81 +1518,92 @@
       }
     }
 
-    var high = pool.highWater;
-    var active = pool.active;
-    var oid = pool.ownerId;
-    var shell = pool.shell;
-    var px = pool.x;
-    var py = pool.y;
-    var prevX = pool.prevX;
-    var prevY = pool.prevY;
-    var vx = pool.vx;
-    var vy = pool.vy;
-    var orbitAngle = pool.orbitAngle;
-    var orbitDir = pool.orbitDir;
-    var speedFactor = pool.speedFactor;
-    var phase = pool.phase;
-    var time = st.elapsedTime;
+    // Smart Shield Threat Scan BEFORE spatial.clear() using spatial grid from previous tick
+    var sLen = shieldingList.length;
+    if (sLen > 0) {
+      var sHead = spatial.head;
+      var sNext = spatial.next;
+      var sDim = spatial.gridDim;
 
-    // Smart Shield Threat Scan: detect incoming enemy electrons and closest enemy nucleus
-    if (shieldingList.length > 0) {
-      var sLen = shieldingList.length;
-      for (var se = 0; se < high; se++) {
-        if (!active[se]) continue;
-        var eOwnerId = oid[se];
-        var eOwner = nuclei[eOwnerId];
-        var sx = px[se];
-        var sy = py[se];
-        for (var si = 0; si < sLen; si++) {
-          var sNuc = shieldingList[si];
-          if (eOwnerId === sNuc.id || Entities.areAllies(sNuc, eOwner)) continue;
-          var sdx = sx - sNuc.x;
-          var sdy = sy - sNuc.y;
-          var senseR = sNuc.orbitRadius * 1.65 + 85;
-          var sdSq = sdx * sdx + sdy * sdy;
-          if (sdSq < senseR * senseR) {
-            sNuc._incomingThreats.push({ x: sx, y: sy, dSq: sdSq });
+      for (var si = 0; si < sLen; si++) {
+        var sNuc = shieldingList[si];
+        var senseR = sNuc.orbitRadius * 1.65 + 85;
+        var senseRSq = senseR * senseR;
+        var minGx = spatial.getCellX(sNuc.x - senseR);
+        var maxGx = spatial.getCellX(sNuc.x + senseR);
+        var minGy = spatial.getCellY(sNuc.y - senseR);
+        var maxGy = spatial.getCellY(sNuc.y + senseR);
+
+        for (var sgy = minGy; sgy <= maxGy; sgy++) {
+          var rowOff = sgy * sDim;
+          for (var sgx = minGx; sgx <= maxGx; sgx++) {
+            var se = sHead[rowOff + sgx];
+            while (se !== -1) {
+              if (active[se]) {
+                var eOwnerId = oid[se];
+                if (eOwnerId !== sNuc.id && !Entities.areAllies(sNuc, nuclei[eOwnerId])) {
+                  var sx = px[se];
+                  var sy = py[se];
+                  var sdx = sx - sNuc.x;
+                  var sdy = sy - sNuc.y;
+                  var sdSq = sdx * sdx + sdy * sdy;
+                  if (sdSq < senseRSq) {
+                    var cnt = sNuc._threatCount;
+                    if (cnt < 16 || sdSq < sNuc._threatDSq[15]) {
+                      var pos = cnt < 16 ? cnt++ : 15;
+                      while (pos > 0 && sNuc._threatDSq[pos - 1] > sdSq) {
+                        sNuc._threatDSq[pos] = sNuc._threatDSq[pos - 1];
+                        sNuc._threatX[pos] = sNuc._threatX[pos - 1];
+                        sNuc._threatY[pos] = sNuc._threatY[pos - 1];
+                        pos--;
+                      }
+                      sNuc._threatDSq[pos] = sdSq;
+                      sNuc._threatX[pos] = sx;
+                      sNuc._threatY[pos] = sy;
+                      sNuc._threatCount = cnt;
+                    }
+                  }
+                }
+              }
+              se = sNext[se];
+            }
           }
         }
-      }
 
-      for (var si2 = 0; si2 < sLen; si2++) {
-        var sn = shieldingList[si2];
-        var threats = sn._incomingThreats;
-        if (threats.length > 0) {
-          threats.sort(function (a, b) { return a.dSq - b.dSq; });
-          if (threats.length > 16) threats.length = 16;
+        var tCount = sNuc._threatCount;
+        if (tCount > 0) {
           var sumX = 0;
           var sumY = 0;
-          for (var ti = 0; ti < threats.length; ti++) {
-            var th = threats[ti];
-            var td = Math.sqrt(th.dSq) || 1;
+          for (var ti = 0; ti < tCount; ti++) {
+            var td = Math.sqrt(sNuc._threatDSq[ti]) || 1;
             var w = 1 / (td + 20);
-            sumX += ((th.x - sn.x) / td) * w;
-            sumY += ((th.y - sn.y) / td) * w;
+            sumX += ((sNuc._threatX[ti] - sNuc.x) / td) * w;
+            sumY += ((sNuc._threatY[ti] - sNuc.y) / td) * w;
           }
-          sn.shieldThreatAngle = Math.atan2(sumY, sumX);
-          sn.shieldThreatActive = true;
+          sNuc.shieldThreatAngle = Math.atan2(sumY, sumX);
+          sNuc.shieldThreatActive = true;
         } else {
           // Fallback: aim shield phalanx at closest nearby enemy nucleus
           var bestEnD = Infinity;
-          var maxEnR = sn.orbitRadius * 2.6 + 220;
+          var maxEnR = sNuc.orbitRadius * 2.6 + 220;
           var maxEnRSq = maxEnR * maxEnR;
           for (var ei = 0; ei < nLen; ei++) {
             var en = nuclei[ei];
-            if (!en.alive || en.id === sn.id || Entities.areAllies(sn, en)) continue;
-            var edx = en.x - sn.x;
-            var edy = en.y - sn.y;
+            if (!en.alive || en.id === sNuc.id || Entities.areAllies(sNuc, en)) continue;
+            var edx = en.x - sNuc.x;
+            var edy = en.y - sNuc.y;
             var edSq = edx * edx + edy * edy;
             if (edSq < maxEnRSq && edSq < bestEnD) {
               bestEnD = edSq;
-              sn.shieldThreatAngle = Math.atan2(edy, edx);
-              sn.shieldThreatActive = true;
+              sNuc.shieldThreatAngle = Math.atan2(edy, edx);
+              sNuc.shieldThreatActive = true;
             }
           }
         }
       }
     }
+
+    spatial.clear();
 
     for (var i = 0; i < high; i++) {
       if (!active[i]) continue;
@@ -1594,16 +1630,17 @@
       if (ow.stance === 'SHIELD') {
         var slot = ow._shieldSlot++;
         var totalE = Math.max(1, ow.electronCount);
-        var threatsList = ow._incomingThreats;
-        var maxIntercept = Math.min(threatsList.length, Math.ceil(totalE * 0.65));
+        var threatCount = ow._threatCount;
+        var maxIntercept = Math.min(threatCount, Math.ceil(totalE * 0.65));
 
-        if (threatsList.length > 0 && slot < maxIntercept) {
+        if (threatCount > 0 && slot < maxIntercept) {
           // Active intercept: step directly into incoming enemy electron's path
-          var threat = threatsList[slot];
-          var thDist = Math.sqrt(threat.dSq) || 1;
+          var thX = ow._threatX[slot];
+          var thY = ow._threatY[slot];
+          var thDist = Math.sqrt(ow._threatDSq[slot]) || 1;
           var interceptDist = Math.min(thDist * 0.92, ow.orbitRadius * 1.15);
-          tx = ow.x + ((threat.x - ow.x) / thDist) * interceptDist;
-          ty = ow.y + ((threat.y - ow.y) / thDist) * interceptDist;
+          tx = ow.x + ((thX - ow.x) / thDist) * interceptDist;
+          ty = ow.y + ((thY - ow.y) / thDist) * interceptDist;
           steerRate = 11.0;
           maxSpeed = ow.moveSpeed + 275;
         } else if (ow.shieldThreatActive) {
@@ -1744,22 +1781,39 @@
         }
       }
 
-      // Check electron pickup via spatial hash
+      // Check electron pickup via inline 3x3 spatial hash (zero closure allocation)
       if (!collector) {
-        spatial.query3x3(p.x, p.y, function (eIdx) {
-          if (!eActive[eIdx]) return false;
-          var edx = ex[eIdx] - p.x;
-          var edy = ey[eIdx] - p.y;
-          var pickR = p.radius + 11;
-          if (edx * edx + edy * edy < pickR * pickR) {
-            var ow = nuclei[eOid[eIdx]];
-            if (ow && ow.alive) {
-              collector = ow;
-              return true;
+        var acx = spatial.getCellX(p.x);
+        var acy = spatial.getCellY(p.y);
+        var aMinX = acx > 0 ? acx - 1 : 0;
+        var aMaxX = acx < spatial.gridDim - 1 ? acx + 1 : spatial.gridDim - 1;
+        var aMinY = acy > 0 ? acy - 1 : 0;
+        var aMaxY = acy < spatial.gridDim - 1 ? acy + 1 : spatial.gridDim - 1;
+        var pickRSq = (p.radius + 11) * (p.radius + 11);
+        var aHead = spatial.head;
+        var aNext = spatial.next;
+        var aDim = spatial.gridDim;
+
+        for (var agy = aMinY; agy <= aMaxY && !collector; agy++) {
+          var aRowOff = agy * aDim;
+          for (var agx = aMinX; agx <= aMaxX && !collector; agx++) {
+            var eIdx = aHead[aRowOff + agx];
+            while (eIdx !== -1) {
+              if (eActive[eIdx]) {
+                var edx = ex[eIdx] - p.x;
+                var edy = ey[eIdx] - p.y;
+                if (edx * edx + edy * edy < pickRSq) {
+                  var ow = nuclei[eOid[eIdx]];
+                  if (ow && ow.alive) {
+                    collector = ow;
+                    break;
+                  }
+                }
+              }
+              eIdx = aNext[eIdx];
             }
           }
-          return false;
-        });
+        }
       }
 
       if (collector) {
@@ -2697,8 +2751,9 @@
       dom.hudZoneTimer.textContent = '∞';
     }
 
-    // Sort alive nuclei for leaderboard & player rank
-    var aliveList = [];
+    // Sort alive nuclei for leaderboard & player rank (reuse scratch array)
+    var aliveList = this._aliveScratch;
+    aliveList.length = 0;
     for (var i = 0; i < st.nuclei.length; i++) {
       if (st.nuclei[i].alive) aliveList.push(st.nuclei[i]);
     }
@@ -2706,7 +2761,7 @@
       return b.power - a.power;
     });
 
-    // Leaderboard Top 6
+    // Leaderboard Top 6 (update DOM only when content changes)
     var lbHtml = '';
     var topCount = Math.min(6, aliveList.length);
     for (var r = 0; r < topCount; r++) {
@@ -2726,7 +2781,10 @@
         item.electronCount +
         '</span></div>';
     }
-    dom.leaderboardList.innerHTML = lbHtml;
+    if (lbHtml !== this._lastLbHtml) {
+      this._lastLbHtml = lbHtml;
+      dom.leaderboardList.innerHTML = lbHtml;
+    }
 
     // Player stats & tactical bar
     if (dom.netBadge) {
@@ -2783,7 +2841,7 @@
       }
     }
 
-    // Kill feed
+    // Kill feed (update DOM only when content changes)
     var kfHtml = '';
     for (var k = 0; k < st.killFeed.length; k++) {
       var kf = st.killFeed[k];
@@ -2801,7 +2859,10 @@
         this._escapeHtml(kf.victim) +
         '</span></div>';
     }
-    dom.killFeed.innerHTML = kfHtml;
+    if (kfHtml !== this._lastKfHtml) {
+      this._lastKfHtml = kfHtml;
+      dom.killFeed.innerHTML = kfHtml;
+    }
   };
 
   Engine.prototype._escapeHtml = function (str) {

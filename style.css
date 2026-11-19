@@ -45,9 +45,7 @@ body.in-game {
 }
 
 .hud-panel {
-  background: rgba(10, 15, 32, 0.72);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(8, 13, 28, 0.86);
   border: 1px solid rgba(110, 180, 255, 0.2);
   border-radius: 14px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
@@ -63,6 +61,7 @@ body.in-game {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  contain: layout style;
 }
 
 .stat-row {
@@ -160,6 +159,7 @@ body.in-game {
   align-items: center;
   gap: 14px;
   padding: 8px 18px;
+  contain: layout style;
 }
 
 .pill-seg {
@@ -213,6 +213,7 @@ body.in-game {
   flex-direction: column;
   gap: 5px;
   min-width: 280px;
+  contain: layout style;
 }
 
 .team-counts-row {
@@ -318,6 +319,7 @@ body.in-game {
 .leaderboard-card {
   width: 100%;
   padding: 10px 12px;
+  contain: layout style;
 }
 
 .card-title {
@@ -382,15 +384,15 @@ body.in-game {
   align-items: flex-end;
   gap: 5px;
   width: 290px;
+  contain: layout style;
 }
 
 .kf-item {
-  background: rgba(8, 13, 28, 0.72);
+  background: rgba(8, 13, 28, 0.86);
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 4px 10px;
   border-radius: 8px;
   font-size: 11.5px;
-  backdrop-filter: blur(8px);
 }
 
 .kf-player {
@@ -433,6 +435,7 @@ body.in-game {
   align-items: center;
   gap: 10px;
   padding: 8px 12px;
+  contain: layout style;
 }
 
 .skill-chip {
@@ -535,9 +538,9 @@ body.in-game {
   z-index: 30;
   display: grid;
   place-items: center;
-  background: rgba(3, 6, 16, 0.56);
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
+  background: rgba(3, 6, 16, 0.62);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
   padding: 16px;
 }
 
