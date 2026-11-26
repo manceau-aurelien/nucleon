@@ -8,9 +8,11 @@
     var prevMaxHp = nuc.maxHp || Config.getMaxHp(nuc.power);
     nuc.radius = Config.getRadius(nuc.power);
     nuc.maxHp = Config.getMaxHp(nuc.power);
-    nuc.maxElectrons = Config.getMaxElectrons(nuc.power);
-    nuc.prodRate = Config.getProdRate(nuc.power);
-    nuc.orbitRadius = Config.getOrbitRadius(nuc.power);
+    nuc.naturalCap = Config.getNaturalCapacity(nuc.power);
+    nuc.baseProdRate = Config.getBaseProdRate(nuc.power);
+    nuc.crowdMult = Config.getCrowdFactor(nuc.power, nuc.electronCount);
+    nuc.prodRate = nuc.baseProdRate * nuc.crowdMult;
+    nuc.orbitRadius = Config.getOrbitRadius(nuc.power, nuc.electronCount);
     nuc.moveSpeed = Config.getMoveSpeed(nuc.power);
 
     if (prevMaxHp > 0 && nuc.hp !== undefined) {
@@ -25,11 +27,22 @@
     }
   }
 
-  function createNucleus(id, name, x, y, hue, isPlayer, personality, team) {
+  function updateDynamicOrbitAndProd(nuc) {
+    nuc.crowdMult = Config.getCrowdFactor(nuc.power, nuc.electronCount);
+    nuc.prodRate = nuc.baseProdRate * nuc.crowdMult;
+    nuc.orbitRadius = Config.getOrbitRadius(nuc.power, nuc.electronCount);
+    if (nuc.prodRate > nuc.peakProdRate) {
+      nuc.peakProdRate = nuc.prodRate;
+    }
+  }
+
+  function createNucleus(id, name, x, y, hue, isPlayer, personality, team, squadTag, wingSlot) {
     var power = Config.START_POWER;
     var nuc = {
       id: id,
       name: name,
+      squadTag: squadTag || '',
+      wingSlot: wingSlot || 0,
       isPlayer: !!isPlayer,
       isRemotePlayer: false,
       isFriend: false,
@@ -45,11 +58,13 @@
       radius: 0,
       hp: 0,
       maxHp: 0,
-      maxElectrons: 0,
+      naturalCap: 12,
+      baseProdRate: 0.2,
+      crowdMult: 1,
       prodRate: 0,
       prodAccum: 0,
       electronCount: 0,
-      shellCounts: [0, 0, 0],
+      shellCounts: [0, 0, 0, 0, 0, 0],
       orbitRadius: 0,
       moveSpeed: 0,
       hue: hue,
@@ -159,7 +174,9 @@
     }
     this.count++;
     owner.electronCount++;
-    owner.shellCounts[shell]++;
+    if (shell >= 0 && shell < owner.shellCounts.length) {
+      owner.shellCounts[shell]++;
+    }
     if (owner.electronCount > owner.peakElectrons) {
       owner.peakElectrons = owner.electronCount;
     }
@@ -174,7 +191,9 @@
     var owner = nuclei[oid];
     if (owner) {
       if (owner.electronCount > 0) owner.electronCount--;
-      if (owner.shellCounts[sh] > 0) owner.shellCounts[sh]--;
+      if (sh >= 0 && sh < owner.shellCounts.length && owner.shellCounts[sh] > 0) {
+        owner.shellCounts[sh]--;
+      }
     }
     this.freeList[this.freeTop++] = idx;
     this.count--;
@@ -206,19 +225,19 @@
   function createFxPools() {
     var i;
     var sparks = [];
-    for (i = 0; i < 700; i++) {
+    for (i = 0; i < 800; i++) {
       sparks.push({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 0.3, size: 2, hue: 188, whiteMix: 0.5 });
     }
     var shockwaves = [];
-    for (i = 0; i < 48; i++) {
+    for (i = 0; i < 56; i++) {
       shockwaves.push({ active: false, x: 0, y: 0, radius: 10, maxRadius: 80, life: 0, maxLife: 0.4, hue: 188, lineWidth: 3, inward: false });
     }
     var drainBeams = [];
-    for (i = 0; i < 120; i++) {
+    for (i = 0; i < 140; i++) {
       drainBeams.push({ active: false, x1: 0, y1: 0, x2: 0, y2: 0, life: 0, maxLife: 0.14, hue: 188 });
     }
     var floatingTexts = [];
-    for (i = 0; i < 40; i++) {
+    for (i = 0; i < 44; i++) {
       floatingTexts.push({ active: false, x: 0, y: 0, vy: -35, text: '', subtext: '', color: '#ffffff', life: 0, maxLife: 1.4, scale: 1 });
     }
     return {
@@ -304,7 +323,7 @@
         y: 0,
         vx: 0,
         vy: 0,
-        energy: 0.32,
+        energy: 0.35,
         radius: 5,
         hue: 188,
         pulsePhase: Math.random() * Math.PI * 2,
@@ -320,6 +339,7 @@
 
   NUCLEON.Entities = {
     recalcStats: recalcStats,
+    updateDynamicOrbitAndProd: updateDynamicOrbitAndProd,
     createNucleus: createNucleus,
     areAllies: areAllies,
     ElectronPool: ElectronPool,

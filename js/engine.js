@@ -13,12 +13,29 @@
   var Renderer = NUCLEON.Renderer;
 
   var BEST_STORAGE_KEY = 'nucleon_best_record';
+  var ZONE_CFG_STORAGE_KEY = 'nucleon_zone_cfg';
 
   function formatTime(sec) {
     var s = Math.max(0, Math.floor(sec));
     var m = Math.floor(s / 60);
     var r = s % 60;
     return m + ':' + (r < 10 ? '0' + r : r);
+  }
+
+  function formatDurationLabel(sec) {
+    var s = Math.max(0, Math.round(sec));
+    var m = Math.floor(s / 60);
+    var r = s % 60;
+    if (m === 0) return r + ' s';
+    return r === 0 ? m + ' min' : m + ' min ' + (r < 10 ? '0' + r : r);
+  }
+
+  function speedCategoryLabel(pxPerSec) {
+    if (pxPerSec <= 8) return 'Très lente';
+    if (pxPerSec <= 14) return 'Lente';
+    if (pxPerSec <= 24) return 'Normale';
+    if (pxPerSec <= 38) return 'Rapide';
+    return 'Éclair';
   }
 
   function shuffleArray(arr) {
@@ -57,7 +74,7 @@
   // Bars use transform: scaleX (compositor only, no layout) instead of width
   function setScaleX(el, ratio) {
     if (!el) return;
-    var r = Math.round(Math.max(0, Math.min(1, ratio)) * 500) / 500;
+    var r = Math.round(Math.max(0, Math.min(1, ratio)) * 1000) / 1000;
     if (el._hudScale !== r) {
       el._hudScale = r;
       el.style.transform = 'scaleX(' + r + ')';
@@ -92,6 +109,8 @@
       playerTeam: 0,
       friendRelation: 'ally', // 'ally' | 'rival'
       difficulty: 'standard',
+      zoneStartDelay: Config.DEFAULT_ZONE_START_DELAY,
+      zoneShrinkSpeed: Config.DEFAULT_ZONE_SHRINK_SPEED,
       playerName: 'Noyau-01',
       playerHue: 188,
       mp: {
@@ -121,7 +140,8 @@
       zone: new Zone(),
       killFeed: [],
       elapsedTime: 0,
-      ambientTimer: 0
+      ambientTimer: 0,
+      respawnTimer: 0
     };
 
     this.input = {
@@ -137,11 +157,14 @@
     this.hudAccum = 0;
     this.lastFrameTime = 0;
     this._nearestEnemy = new Int16Array(64);
+    this._squadAliveMarks = new Uint8Array(64);
     this._shieldingList = [];
     this._aliveScratch = [];
     this._lastLbHtml = '';
     this._lastKfHtml = '';
+    this._lastSquadMatesHtml = '';
     this._dom = this._cacheDom();
+    this._loadZoneConfig();
     this._loadBestRecord();
     this._bindEvents();
 
@@ -167,6 +190,21 @@
       hudZoneLabel: document.getElementById('hud-zone-label'),
       hudZoneTimer: document.getElementById('hud-zone-timer'),
       teamScoreboard: document.getElementById('team-scoreboard'),
+      teamPills: [
+        document.getElementById('team-pill-0'),
+        document.getElementById('team-pill-1'),
+        document.getElementById('team-pill-2')
+      ],
+      teamPips: [
+        document.getElementById('team-pip-0'),
+        document.getElementById('team-pip-1'),
+        document.getElementById('team-pip-2')
+      ],
+      teamLbls: [
+        document.getElementById('team-lbl-0'),
+        document.getElementById('team-lbl-1'),
+        document.getElementById('team-lbl-2')
+      ],
       teamCounts: [
         document.getElementById('team-count-0'),
         document.getElementById('team-count-1'),
@@ -177,6 +215,10 @@
         document.getElementById('team-bar-1'),
         document.getElementById('team-bar-2')
       ],
+      squadScoreboard: document.getElementById('squad-scoreboard'),
+      squadKindLbl: document.getElementById('squad-kind-lbl'),
+      squadAliveCount: document.getElementById('squad-alive-count'),
+      squadMatesRow: document.getElementById('squad-mates-row'),
       zoneWarningBanner: document.getElementById('zone-warning-banner'),
       leaderboardList: document.getElementById('leaderboard-list'),
       killFeed: document.getElementById('kill-feed'),
@@ -197,6 +239,14 @@
       worldDesc: document.getElementById('world-desc'),
       playerNameInput: document.getElementById('player-name-input'),
       modePills: document.querySelectorAll('.mode-pill'),
+      modeDesc: document.getElementById('mode-desc'),
+      zoneConfigSection: document.getElementById('zone-config-section'),
+      zoneTotalDuration: document.getElementById('zone-total-duration'),
+      zonePresetPills: document.querySelectorAll('.zone-preset-pill'),
+      zoneDelaySlider: document.getElementById('zone-delay-slider'),
+      zoneDelayVal: document.getElementById('zone-delay-val'),
+      zoneSpeedSlider: document.getElementById('zone-speed-slider'),
+      zoneSpeedVal: document.getElementById('zone-speed-val'),
       colorPickerLabel: document.getElementById('color-picker-label'),
       swatchRow: document.getElementById('swatch-row'),
       diffPills: document.querySelectorAll('.diff-pill'),
@@ -239,8 +289,74 @@
     };
   };
 
+  Engine.prototype._loadZoneConfig = function () {
+    try {
+      var raw = localStorage.getItem(ZONE_CFG_STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.startDelay === 'number' && typeof parsed.shrinkSpeed === 'number') {
+          this.state.zoneStartDelay = Math.max(0, Math.min(600, parsed.startDelay));
+          this.state.zoneShrinkSpeed = Math.max(4, Math.min(60, parsed.shrinkSpeed));
+        }
+      }
+    } catch (e) {}
+    this._syncZoneConfigUi();
+  };
+
+  Engine.prototype._saveZoneConfig = function () {
+    try {
+      localStorage.setItem(
+        ZONE_CFG_STORAGE_KEY,
+        JSON.stringify({
+          startDelay: this.state.zoneStartDelay,
+          shrinkSpeed: this.state.zoneShrinkSpeed
+        })
+      );
+    } catch (e) {}
+  };
+
+  Engine.prototype._syncZoneConfigUi = function () {
+    var dom = this._dom;
+    var st = this.state;
+    var modeMeta = Config.getModeMeta(st.gameMode);
+    if (dom.zoneConfigSection) {
+      dom.zoneConfigSection.classList.toggle('hidden', !!(modeMeta && modeMeta.endless));
+    }
+    if (dom.zoneDelaySlider) dom.zoneDelaySlider.value = String(st.zoneStartDelay);
+    if (dom.zoneSpeedSlider) dom.zoneSpeedSlider.value = String(st.zoneShrinkSpeed);
+    if (dom.zoneDelayVal) {
+      dom.zoneDelayVal.textContent = st.zoneStartDelay <= 0 ? 'Immédiat (0s)' : formatTime(st.zoneStartDelay);
+    }
+    if (dom.zoneSpeedVal) {
+      dom.zoneSpeedVal.textContent = st.zoneShrinkSpeed + ' px/s (' + speedCategoryLabel(st.zoneShrinkSpeed) + ')';
+    }
+    if (dom.zoneTotalDuration) {
+      var estSec = Config.estimateMatchDuration(st.zoneStartDelay, st.zoneShrinkSpeed);
+      dom.zoneTotalDuration.textContent = '⏱️ Partie : ~' + formatDurationLabel(estSec);
+    }
+    if (dom.zonePresetPills) {
+      var presets = Config.ZONE_PRESETS || [];
+      for (var i = 0; i < dom.zonePresetPills.length; i++) {
+        var pill = dom.zonePresetPills[i];
+        var pid = pill.getAttribute('data-preset');
+        var matched = false;
+        for (var p = 0; p < presets.length; p++) {
+          if (
+            presets[p].id === pid &&
+            presets[p].startDelay === st.zoneStartDelay &&
+            presets[p].shrinkSpeed === st.zoneShrinkSpeed
+          ) {
+            matched = true;
+            break;
+          }
+        }
+        pill.classList.toggle('active', matched);
+      }
+    }
+  };
+
   Engine.prototype._loadBestRecord = function () {
-    this.bestRecord = { rank: 99, kills: 0, wins: 0 };
+    this.bestRecord = { rank: 999, kills: 0, wins: 0 };
     try {
       var raw = localStorage.getItem(BEST_STORAGE_KEY);
       if (raw) {
@@ -266,7 +382,7 @@
   Engine.prototype._renderBestRecord = function () {
     var el = this._dom.bestRecordText;
     if (!el) return;
-    if (this.bestRecord.rank > 60) {
+    if (this.bestRecord.rank > 200) {
       el.textContent = 'Record : aucune partie terminée';
     } else {
       el.textContent =
@@ -359,13 +475,21 @@
       }
     });
 
-    // Team vs Solo picker options inside #swatch-row
+    // Army vs Squad/Solo picker options inside #swatch-row
     function renderPickerOptions() {
       if (!dom.swatchRow) return;
       dom.swatchRow.innerHTML = '';
-      if (self.state.gameMode === 'teams') {
-        if (dom.colorPickerLabel) dom.colorPickerLabel.textContent = 'Votre équipe';
-        for (var t = 0; t < Config.TEAMS.length; t++) {
+      var gm = self.state.gameMode;
+      if (gm === 'teams' || gm === 'clash') {
+        var armyList = gm === 'clash' ? Config.CLASH_TEAMS : Config.TEAMS;
+        if (self.state.playerTeam >= armyList.length) {
+          self.state.playerTeam = 0;
+        }
+        self.state.playerHue = armyList[self.state.playerTeam].hue;
+        if (dom.colorPickerLabel) {
+          dom.colorPickerLabel.textContent = gm === 'clash' ? 'Votre camp' : 'Votre équipe';
+        }
+        for (var t = 0; t < armyList.length; t++) {
           (function (team) {
             var btn = document.createElement('button');
             btn.type = 'button';
@@ -386,10 +510,23 @@
               btn.classList.add('active');
             });
             dom.swatchRow.appendChild(btn);
-          })(Config.TEAMS[t]);
+          })(armyList[t]);
         }
       } else {
-        if (dom.colorPickerLabel) dom.colorPickerLabel.textContent = 'Couleur plasma';
+        var isSq = gm === 'trios' || gm === 'duos';
+        if (dom.colorPickerLabel) {
+          dom.colorPickerLabel.textContent = isSq ? 'Couleur de votre escouade' : 'Couleur plasma';
+        }
+        var hasExactSwatch = false;
+        for (var sCheck = 0; sCheck < Config.PLAYER_SWATCHES.length; sCheck++) {
+          if (Config.PLAYER_SWATCHES[sCheck].hue === self.state.playerHue) {
+            hasExactSwatch = true;
+            break;
+          }
+        }
+        if (!hasExactSwatch) {
+          self.state.playerHue = Config.PLAYER_SWATCHES[0].hue;
+        }
         for (var i = 0; i < Config.PLAYER_SWATCHES.length; i++) {
           (function (sw) {
             var btn = document.createElement('button');
@@ -436,7 +573,7 @@
       })(dom.worldPills[wp]);
     }
 
-    // Game mode pills (Équipes / Solo)
+    // Game mode pills (3 Équipes / Trios / Duos / 2 Camps / Solo / Infini)
     for (var m = 0; m < dom.modePills.length; m++) {
       (function (pill) {
         pill.addEventListener('click', function () {
@@ -448,15 +585,67 @@
             dom.modePills[k].classList.remove('active');
           }
           pill.classList.add('active');
-          if (nextMode === 'teams') {
-            self.state.playerHue = Config.TEAMS[self.state.playerTeam].hue;
-          }
+          var mMeta = Config.getModeMeta(nextMode);
+          if (dom.modeDesc && mMeta) dom.modeDesc.textContent = mMeta.desc;
           renderPickerOptions();
+          self._syncZoneConfigUi();
           self._updateMenuMpUi();
           self.initMatch(true);
           self._sendLobbySync();
         });
       })(dom.modePills[m]);
+    }
+
+    // Zone duration preset pills & sliders
+    if (dom.zonePresetPills) {
+      for (var zp = 0; zp < dom.zonePresetPills.length; zp++) {
+        (function (pill) {
+          pill.addEventListener('click', function () {
+            if (self.state.mp.active && self.state.mp.role === 'guest') return;
+            var pid = pill.getAttribute('data-preset');
+            var presets = Config.ZONE_PRESETS || [];
+            for (var p = 0; p < presets.length; p++) {
+              if (presets[p].id === pid) {
+                self.state.zoneStartDelay = presets[p].startDelay;
+                self.state.zoneShrinkSpeed = presets[p].shrinkSpeed;
+                break;
+              }
+            }
+            self._syncZoneConfigUi();
+            self._saveZoneConfig();
+            self.initMatch(true);
+            self._sendLobbySync();
+          });
+        })(dom.zonePresetPills[zp]);
+      }
+    }
+
+    if (dom.zoneDelaySlider) {
+      dom.zoneDelaySlider.addEventListener('input', function () {
+        if (self.state.mp.active && self.state.mp.role === 'guest') return;
+        self.state.zoneStartDelay = Math.max(0, Math.min(600, Number(dom.zoneDelaySlider.value) || 0));
+        self._syncZoneConfigUi();
+        self._saveZoneConfig();
+        self._sendLobbySync();
+      });
+      dom.zoneDelaySlider.addEventListener('change', function () {
+        if (self.state.mp.active && self.state.mp.role === 'guest') return;
+        self.initMatch(true);
+      });
+    }
+
+    if (dom.zoneSpeedSlider) {
+      dom.zoneSpeedSlider.addEventListener('input', function () {
+        if (self.state.mp.active && self.state.mp.role === 'guest') return;
+        self.state.zoneShrinkSpeed = Math.max(4, Math.min(60, Number(dom.zoneSpeedSlider.value) || 18));
+        self._syncZoneConfigUi();
+        self._saveZoneConfig();
+        self._sendLobbySync();
+      });
+      dom.zoneSpeedSlider.addEventListener('change', function () {
+        if (self.state.mp.active && self.state.mp.role === 'guest') return;
+        self.initMatch(true);
+      });
     }
 
     // Difficulty pills
@@ -694,6 +883,8 @@
       worldId: st.worldId,
       gameMode: st.gameMode,
       difficulty: st.difficulty,
+      zoneStartDelay: st.zoneStartDelay,
+      zoneShrinkSpeed: st.zoneShrinkSpeed,
       friendRelation: st.friendRelation,
       hostName: hostName
     });
@@ -723,6 +914,11 @@
     for (var i = 0; i < dom.worldPills.length; i++) dom.worldPills[i].disabled = isGuest;
     for (var j = 0; j < dom.modePills.length; j++) dom.modePills[j].disabled = isGuest;
     for (var k = 0; k < dom.diffPills.length; k++) dom.diffPills[k].disabled = isGuest;
+    if (dom.zonePresetPills) {
+      for (var zp = 0; zp < dom.zonePresetPills.length; zp++) dom.zonePresetPills[zp].disabled = isGuest;
+    }
+    if (dom.zoneDelaySlider) dom.zoneDelaySlider.disabled = isGuest;
+    if (dom.zoneSpeedSlider) dom.zoneSpeedSlider.disabled = isGuest;
 
     dom.btnPlay.disabled = isGuest;
     dom.btnPlay.textContent = isGuest ? 'EN ATTENTE DE L\'HÔTE...' : 'LANCER LA PARTIE';
@@ -792,22 +988,26 @@
     // Guest side message handlers
     if (msg.t === 'lobby') {
       st.mp.friendName = msg.hostName || 'Hôte';
+      if (typeof msg.zoneStartDelay === 'number') st.zoneStartDelay = msg.zoneStartDelay;
+      if (typeof msg.zoneShrinkSpeed === 'number') st.zoneShrinkSpeed = msg.zoneShrinkSpeed;
       var wMeta = Worlds.getWorldMeta(msg.worldId);
+      var mMeta = Config.getModeMeta(msg.gameMode);
       var relLabel = msg.friendRelation === 'ally' ? 'Même équipe' : 'Adversaires';
-      var mLabel = msg.gameMode === 'teams'
-        ? 'Équipes (' + relLabel + ')'
-        : msg.friendRelation === 'ally'
-          ? 'Solo (en duo contre les IA)'
-          : 'Solo (' + relLabel + ')';
+      var durSuffix = mMeta.endless
+        ? ''
+        : ' • ~' + formatDurationLabel(Config.estimateMatchDuration(st.zoneStartDelay, st.zoneShrinkSpeed));
+      var mLabel = mMeta.label + ' (' + relLabel + ')' + durSuffix;
       if (this._dom.mpGuestLobbyInfo) {
         this._dom.mpGuestLobbyInfo.textContent =
           'Hôte : ' + st.mp.friendName + ' • Monde : ' + wMeta.name + ' • ' + mLabel;
       }
-      // Preview host's selected world on menu background
-      if (st.mode === 'MENU' && msg.worldId !== st.worldId) {
+      // Preview host's selected world/mode on menu background
+      if (st.mode === 'MENU') {
+        var changed = msg.worldId !== st.worldId || msg.gameMode !== st.gameMode;
         st.worldId = msg.worldId;
         st.gameMode = msg.gameMode;
-        this.initMatch(true);
+        this._syncZoneConfigUi();
+        if (changed) this.initMatch(true);
       }
     } else if (msg.t === 'start') {
       this._startGuestMatch(msg);
@@ -895,18 +1095,53 @@
     return { x: sx, y: sy };
   };
 
+  Engine.prototype._findSquadMemberSpawn = function (world, anchorX, anchorY, slotIdx, nucleiList, squadTeam) {
+    if (slotIdx === 0 && !Worlds.isBlocked(world, anchorX, anchorY, 44)) {
+      return { x: anchorX, y: anchorY };
+    }
+    var baseAng = Math.atan2(anchorY, anchorX) + slotIdx * 2.1;
+    var maxArena = Config.ARENA_RADIUS - 140;
+    for (var tries = 0; tries < 32; tries++) {
+      var dist = 78 + (tries % 5) * 24 + Math.random() * 20;
+      var ang = baseAng + (tries * 0.68);
+      var sx = anchorX + Math.cos(ang) * dist;
+      var sy = anchorY + Math.sin(ang) * dist;
+      if (sx * sx + sy * sy > maxArena * maxArena) continue;
+      if (Worlds.isBlocked(world, sx, sy, 42)) continue;
+
+      var overlap = false;
+      for (var k = 0; k < nucleiList.length; k++) {
+        var other = nucleiList[k];
+        var dx = sx - other.x;
+        var dy = sy - other.y;
+        var minSep = other.team === squadTeam ? 66 : 230;
+        if (dx * dx + dy * dy < minSep * minSep) {
+          overlap = true;
+          break;
+        }
+      }
+      if (!overlap) return { x: sx, y: sy };
+    }
+    return this._findUnblockedSpawn(world, 320, Config.ARENA_RADIUS - 240, 0, Math.PI * 2, nucleiList, 42, null);
+  };
+
   Engine.prototype.initMatch = function (attractMode, customSeed) {
     var st = this.state;
+    var modeMeta = Config.getModeMeta(st.gameMode);
     var seed = customSeed !== undefined ? customSeed : ((Date.now() ^ (Math.random() * 0xffffffff)) >>> 0);
     st.worldSeed = seed;
     st.world = Worlds.generate(st.worldId, seed);
     st.nuclei = [];
     st.electrons.reset();
     st.spatial.clear();
-    st.zone.reset(st.world);
+    st.zone.reset(st.world, modeMeta.endless, {
+      startDelay: st.zoneStartDelay,
+      shrinkSpeed: st.zoneShrinkSpeed
+    });
     st.killFeed = [];
     st.elapsedTime = 0;
     st.ambientTimer = 0;
+    st.respawnTimer = 0;
     st.spectateTarget = null;
     st.leaderId = -1;
     st.mp.friendId = -1;
@@ -914,6 +1149,7 @@
     st.mp.sendAccum = 0;
     st.mp.guestSendAccum = 0;
     st.mp.ambTick = 0;
+    this._lastSquadMatesHtml = '';
 
     // Reset FX
     var i;
@@ -925,147 +1161,295 @@
     // Reset ambient particles
     for (i = 0; i < st.ambient.length; i++) st.ambient[i].active = false;
 
-    var isTeamMode = st.gameMode === 'teams';
+    var isSquadMode = !!modeMeta.isSquad; // 'trios' (20x3) or 'duos' (25x2)
+    var isArmyMode = st.gameMode === 'teams' || st.gameMode === 'clash';
     var isHostMp = !attractMode && st.mp.active && st.mp.role === 'host' && st.mp.connected;
     var player = null;
     var guestNuc = null;
     var idCounter = 0;
-
-    // Spawn Host/Solo Player (if not attract mode)
-    // Solo + friend on the same side: the two humans form a duo against every AI
-    var isSoloDuo = !isTeamMode && isHostMp && st.friendRelation === 'ally';
-
-    if (!attractMode) {
-      var pTeam = isTeamMode ? st.playerTeam : isSoloDuo ? Config.DUO_TEAM : -1;
-      var pHue = isTeamMode ? Config.TEAMS[pTeam].hue : st.playerHue;
-      var pAngMin = isTeamMode ? pTeam * ((Math.PI * 2) / 3) - 0.7 : 0;
-      var pAngMax = isTeamMode ? pTeam * ((Math.PI * 2) / 3) + 0.7 : Math.PI * 2;
-      var pPos = this._findUnblockedSpawn(
-        st.world,
-        420,
-        Config.ARENA_RADIUS * 0.65,
-        pAngMin,
-        pAngMax,
-        st.nuclei,
-        46,
-        null
-      );
-      player = Entities.createNucleus(
-        idCounter++,
-        st.playerName,
-        pPos.x,
-        pPos.y,
-        pHue,
-        true,
-        'PLAYER',
-        pTeam
-      );
-      st.nuclei.push(player);
-      st.player = player;
-      this.renderer.camX = player.x;
-      this.renderer.camY = player.y;
-      this.renderer.zoom = 0.92;
-    } else {
-      st.player = null;
-      this.renderer.camX = 0;
-      this.renderer.camY = 0;
-      this.renderer.zoom = 0.72;
-    }
-
-    // Spawn Connected Friend (Guest) if Host in Multiplayer
-    if (isHostMp) {
-      var gTeam = -1;
-      var gHue = st.mp.friendHue;
-      if (isTeamMode) {
-        gTeam = st.friendRelation === 'ally' ? player.team : (player.team + 1) % 3;
-        gHue = Config.TEAMS[gTeam].hue;
-      } else {
-        if (isSoloDuo) gTeam = Config.DUO_TEAM;
-        if (Math.abs(gHue - player.hue) < 18) {
-          gHue = (gHue + 54) % 360;
-        }
-      }
-      var gAngMin = isTeamMode ? gTeam * ((Math.PI * 2) / 3) - 0.7 : 0;
-      var gAngMax = isTeamMode ? gTeam * ((Math.PI * 2) / 3) + 0.7 : Math.PI * 2;
-      if (isSoloDuo) {
-        // Duo partners start on the same side of the arena
-        var hostAng = Math.atan2(player.y, player.x);
-        gAngMin = hostAng - 0.45;
-        gAngMax = hostAng + 0.45;
-      }
-      var gPos = this._findUnblockedSpawn(
-        st.world,
-        420,
-        Config.ARENA_RADIUS * 0.65,
-        gAngMin,
-        gAngMax,
-        st.nuclei,
-        46,
-        (isTeamMode && gTeam === player.team) || isSoloDuo ? null : player
-      );
-      guestNuc = Entities.createNucleus(
-        idCounter++,
-        st.mp.friendName || 'Ami',
-        gPos.x,
-        gPos.y,
-        gHue,
-        false,
-        'PLAYER',
-        gTeam
-      );
-      guestNuc.isRemotePlayer = true;
-      guestNuc.isFriend = true;
-      st.mp.friendId = guestNuc.id;
-      st.nuclei.push(guestNuc);
-    }
-
-    // Build team assignments for AIs (17 per team total across 51 combatants)
-    var aiCount = isHostMp ? Config.AI_COUNT - 1 : Config.AI_COUNT;
-    var aiTeams = [];
-    if (isTeamMode) {
-      var teamQuota = [17, 17, 17];
-      if (!attractMode && player) teamQuota[player.team]--;
-      if (isHostMp && guestNuc) teamQuota[guestNuc.team]--;
-      if (attractMode) teamQuota[2] = 16; // 50 AIs total in attract mode
-
-      for (var tIdx = 0; tIdx < 3; tIdx++) {
-        for (var q = 0; q < teamQuota[tIdx]; q++) {
-          aiTeams.push(tIdx);
-        }
-      }
-      aiTeams = shuffleArray(aiTeams);
-    }
-
-    // Spawn AIs with well-distributed unblocked positions
     var names = shuffleArray(Config.AI_NAMES);
-    for (i = 0; i < aiCount; i++) {
-      var aiTeam = isTeamMode ? aiTeams[i % aiTeams.length] : -1;
-      var aMin = isTeamMode ? aiTeam * ((Math.PI * 2) / 3) - 0.95 : 0;
-      var aMax = isTeamMode ? aiTeam * ((Math.PI * 2) / 3) + 0.95 : Math.PI * 2;
-      var minR = isTeamMode ? 350 : 120;
-      var maxR = Config.ARENA_RADIUS - 240;
+    var nameIdx = 0;
 
-      var avoidRef = null;
-      if (player && (!isTeamMode || aiTeam !== player.team)) {
-        avoidRef = player;
-      }
-      var aiPos = this._findUnblockedSpawn(st.world, minR, maxR, aMin, aMax, st.nuclei, 42, avoidRef);
+    if (isSquadMode) {
+      // ---- SQUAD MODES: Trios (20 teams of 3 = 60) & Duos (25 teams of 2 = 50) ----
+      var squadCount = modeMeta.teamCount;
+      var squadSize = modeMeta.teamSize;
+      var innerCount = Math.floor(squadCount * 0.35);
+      var outerCount = squadCount - innerCount;
+      var anchors = [];
+      var baseRot = Math.random() * Math.PI * 2;
 
-      var hue = isTeamMode ? Config.TEAMS[aiTeam].hue : Config.NEON_HUES[(i + 3) % Config.NEON_HUES.length];
-      if (!isTeamMode && player && Math.abs(hue - player.hue) < 16) {
-        hue = (hue + 48) % 360;
+      for (var sq = 0; sq < squadCount; sq++) {
+        var isInner = sq < innerCount;
+        var ringIdx = isInner ? sq : sq - innerCount;
+        var ringTotal = isInner ? innerCount : outerCount;
+        var ringAng = baseRot + (ringIdx / ringTotal) * Math.PI * 2 + (isInner ? 0.32 : 0);
+        var rLow = isInner ? 950 : 1920;
+        var rHigh = isInner ? 1420 : Config.ARENA_RADIUS - 280;
+        var ancPos = this._findUnblockedSpawn(
+          st.world,
+          rLow,
+          rHigh,
+          ringAng - 0.18,
+          ringAng + 0.18,
+          anchors,
+          56,
+          null
+        );
+        anchors.push(ancPos);
       }
-      var ai = Entities.createNucleus(
-        idCounter++,
-        names[i % names.length],
-        aiPos.x,
-        aiPos.y,
-        hue,
-        false,
-        AI.pickRandomPersonality(),
-        aiTeam
-      );
-      st.nuclei.push(ai);
+
+      // Shuffle anchor positions so Squad 0 starts in a fresh sector each match
+      anchors = shuffleArray(anchors);
+
+      var squadHues = [];
+      var squadFilled = [];
+      for (var shIdx = 0; shIdx < squadCount; shIdx++) {
+        var defHue = Config.SQUADS[shIdx % Config.SQUADS.length].hue;
+        if (shIdx === 0 && !attractMode) {
+          squadHues.push(st.playerHue);
+        } else {
+          if (!attractMode && Math.abs(defHue - st.playerHue) < 16) {
+            defHue = (defHue + 28) % 360;
+          }
+          squadHues.push(defHue);
+        }
+        squadFilled.push(0);
+      }
+
+      if (!attractMode) {
+        var pSqPos = this._findSquadMemberSpawn(st.world, anchors[0].x, anchors[0].y, 0, st.nuclei, 0);
+        player = Entities.createNucleus(
+          idCounter++,
+          st.playerName,
+          pSqPos.x,
+          pSqPos.y,
+          squadHues[0],
+          true,
+          'PLAYER',
+          0,
+          Config.SQUADS[0].tag,
+          0
+        );
+        squadFilled[0]++;
+        st.nuclei.push(player);
+        st.player = player;
+        this.renderer.camX = player.x;
+        this.renderer.camY = player.y;
+        this.renderer.zoom = 0.92;
+      } else {
+        st.player = null;
+        this.renderer.camX = 0;
+        this.renderer.camY = 0;
+        this.renderer.zoom = 0.72;
+      }
+
+      if (isHostMp) {
+        var gSqTeam = st.friendRelation === 'ally' ? 0 : 1;
+        var gSlot = squadFilled[gSqTeam];
+        if (gSqTeam === 1 && Math.abs(st.mp.friendHue - squadHues[0]) >= 18) {
+          squadHues[1] = st.mp.friendHue;
+        }
+        var gSqPos = this._findSquadMemberSpawn(
+          st.world,
+          anchors[gSqTeam].x,
+          anchors[gSqTeam].y,
+          gSlot,
+          st.nuclei,
+          gSqTeam
+        );
+        guestNuc = Entities.createNucleus(
+          idCounter++,
+          st.mp.friendName || 'Ami',
+          gSqPos.x,
+          gSqPos.y,
+          squadHues[gSqTeam],
+          false,
+          'PLAYER',
+          gSqTeam,
+          Config.SQUADS[gSqTeam].tag,
+          gSlot
+        );
+        guestNuc.isRemotePlayer = true;
+        guestNuc.isFriend = true;
+        squadFilled[gSqTeam]++;
+        st.mp.friendId = guestNuc.id;
+        st.nuclei.push(guestNuc);
+      }
+
+      for (var sTeam = 0; sTeam < squadCount; sTeam++) {
+        var sqMeta = Config.SQUADS[sTeam % Config.SQUADS.length];
+        while (squadFilled[sTeam] < squadSize) {
+          var mSlot = squadFilled[sTeam];
+          var mPos = this._findSquadMemberSpawn(
+            st.world,
+            anchors[sTeam].x,
+            anchors[sTeam].y,
+            mSlot,
+            st.nuclei,
+            sTeam
+          );
+          var sqAi = Entities.createNucleus(
+            idCounter++,
+            names[nameIdx++ % names.length],
+            mPos.x,
+            mPos.y,
+            squadHues[sTeam],
+            false,
+            AI.pickRandomPersonality(),
+            sTeam,
+            sqMeta.tag,
+            mSlot
+          );
+          squadFilled[sTeam]++;
+          st.nuclei.push(sqAi);
+        }
+      }
+    } else {
+      // ---- ARMY MODES (3 Équipes / 2 Camps) & FFA MODES (Solo / Infini) ----
+      var armyList = st.gameMode === 'clash' ? Config.CLASH_TEAMS : Config.TEAMS;
+      var armyCount = armyList.length;
+      var sectorSpan = (Math.PI * 2) / armyCount;
+      var halfArc = sectorSpan * 0.36;
+      var isSoloDuo = !isArmyMode && isHostMp && st.friendRelation === 'ally';
+
+      if (!attractMode) {
+        var pTeam = isArmyMode ? st.playerTeam % armyCount : isSoloDuo ? Config.DUO_TEAM : -1;
+        var pHue = isArmyMode ? armyList[pTeam].hue : st.playerHue;
+        var pAngMin = isArmyMode ? pTeam * sectorSpan - halfArc : 0;
+        var pAngMax = isArmyMode ? pTeam * sectorSpan + halfArc : Math.PI * 2;
+        var pPos = this._findUnblockedSpawn(
+          st.world,
+          420,
+          Config.ARENA_RADIUS * 0.65,
+          pAngMin,
+          pAngMax,
+          st.nuclei,
+          46,
+          null
+        );
+        player = Entities.createNucleus(
+          idCounter++,
+          st.playerName,
+          pPos.x,
+          pPos.y,
+          pHue,
+          true,
+          'PLAYER',
+          pTeam,
+          '',
+          0
+        );
+        st.nuclei.push(player);
+        st.player = player;
+        this.renderer.camX = player.x;
+        this.renderer.camY = player.y;
+        this.renderer.zoom = 0.92;
+      } else {
+        st.player = null;
+        this.renderer.camX = 0;
+        this.renderer.camY = 0;
+        this.renderer.zoom = 0.72;
+      }
+
+      if (isHostMp) {
+        var gTeam = -1;
+        var gHue = st.mp.friendHue;
+        if (isArmyMode) {
+          gTeam = st.friendRelation === 'ally' ? player.team : (player.team + 1) % armyCount;
+          gHue = armyList[gTeam].hue;
+        } else {
+          if (isSoloDuo) gTeam = Config.DUO_TEAM;
+          if (Math.abs(gHue - player.hue) < 18) {
+            gHue = (gHue + 54) % 360;
+          }
+        }
+        var gAngMin = isArmyMode ? gTeam * sectorSpan - halfArc : 0;
+        var gAngMax = isArmyMode ? gTeam * sectorSpan + halfArc : Math.PI * 2;
+        if (isSoloDuo) {
+          var hostAng = Math.atan2(player.y, player.x);
+          gAngMin = hostAng - 0.45;
+          gAngMax = hostAng + 0.45;
+        }
+        var gPos = this._findUnblockedSpawn(
+          st.world,
+          420,
+          Config.ARENA_RADIUS * 0.65,
+          gAngMin,
+          gAngMax,
+          st.nuclei,
+          46,
+          (isArmyMode && gTeam === player.team) || isSoloDuo ? null : player
+        );
+        guestNuc = Entities.createNucleus(
+          idCounter++,
+          st.mp.friendName || 'Ami',
+          gPos.x,
+          gPos.y,
+          gHue,
+          false,
+          'PLAYER',
+          gTeam,
+          '',
+          0
+        );
+        guestNuc.isRemotePlayer = true;
+        guestNuc.isFriend = true;
+        st.mp.friendId = guestNuc.id;
+        st.nuclei.push(guestNuc);
+      }
+
+      var targetTotal = attractMode ? modeMeta.total - 1 : modeMeta.total;
+      var aiCount = Math.max(0, targetTotal - st.nuclei.length);
+      var aiTeams = [];
+      if (isArmyMode) {
+        var teamQuota = [];
+        for (var qInit = 0; qInit < armyCount; qInit++) {
+          teamQuota.push(modeMeta.teamSize);
+        }
+        if (!attractMode && player) teamQuota[player.team]--;
+        if (isHostMp && guestNuc) teamQuota[guestNuc.team]--;
+        if (attractMode) teamQuota[armyCount - 1]--;
+
+        for (var tIdx = 0; tIdx < armyCount; tIdx++) {
+          for (var q = 0; q < teamQuota[tIdx]; q++) {
+            aiTeams.push(tIdx);
+          }
+        }
+        aiTeams = shuffleArray(aiTeams);
+      }
+
+      for (i = 0; i < aiCount; i++) {
+        var aiTeam = isArmyMode ? aiTeams[i % aiTeams.length] : -1;
+        var aMin = isArmyMode ? aiTeam * sectorSpan - halfArc * 1.25 : 0;
+        var aMax = isArmyMode ? aiTeam * sectorSpan + halfArc * 1.25 : Math.PI * 2;
+        var minR = isArmyMode ? 350 : 120;
+        var maxR = Config.ARENA_RADIUS - 240;
+
+        var avoidRef = null;
+        if (player && (!isArmyMode || aiTeam !== player.team)) {
+          avoidRef = player;
+        }
+        var aiPos = this._findUnblockedSpawn(st.world, minR, maxR, aMin, aMax, st.nuclei, 42, avoidRef);
+
+        var hue = isArmyMode ? armyList[aiTeam].hue : Config.NEON_HUES[(i + 3) % Config.NEON_HUES.length];
+        if (!isArmyMode && player && Math.abs(hue - player.hue) < 16) {
+          hue = (hue + 48) % 360;
+        }
+        var ai = Entities.createNucleus(
+          idCounter++,
+          names[nameIdx++ % names.length],
+          aiPos.x,
+          aiPos.y,
+          hue,
+          false,
+          AI.pickRandomPersonality(),
+          aiTeam,
+          '',
+          0
+        );
+        st.nuclei.push(ai);
+      }
     }
 
     st.totalCount = st.nuclei.length;
@@ -1078,12 +1462,13 @@
       for (var e = 0; e < startElectrons; e++) {
         var shell = e % 2;
         var ang = (e / startElectrons) * Math.PI * 2 + Math.random() * 0.2;
-        var rad = nuc.orbitRadius * (0.72 + shell * 0.22);
+        var rad = nuc.orbitRadius * (0.68 + shell * 0.28);
         var ex = nuc.x + Math.cos(ang) * rad;
         var ey = nuc.y + Math.sin(ang) * rad;
         var eIdx = st.electrons.spawn(nuc, ex, ey, 0, 0, shell, ang, shell === 1 ? -1 : 1);
         if (eIdx !== -1) Worlds.resolveElectron(st.world, st.electrons, eIdx);
       }
+      Entities.updateDynamicOrbitAndProd(nuc);
     }
 
     // Seed ambient particles
@@ -1099,7 +1484,8 @@
           x: Math.round(mn.x),
           y: Math.round(mn.y),
           hue: mn.hue,
-          team: mn.team
+          team: mn.team,
+          squadTag: mn.squadTag || ''
         });
       }
       Net.send({
@@ -1108,6 +1494,8 @@
         seed: seed,
         gameMode: st.gameMode,
         difficulty: st.difficulty,
+        zoneStartDelay: st.zoneStartDelay,
+        zoneShrinkSpeed: st.zoneShrinkSpeed,
         hostId: player.id,
         guestId: guestNuc.id,
         nucleiMeta: metaList
@@ -1128,7 +1516,9 @@
     var target =
       targetOverride !== undefined
         ? targetOverride
-        : Math.max(Config.AMBIENT_TARGET_MIN, Math.round(Config.AMBIENT_TARGET_BASE * ratio * ratio));
+        : zone.state === 'FINAL' || zone.radius <= 1
+          ? 0
+          : Math.max(Config.AMBIENT_TARGET_MIN, Math.round(Config.AMBIENT_TARGET_BASE * ratio * ratio));
 
     var activeCount = 0;
     var ambient = st.ambient;
@@ -1174,7 +1564,7 @@
       part.vx = (Math.random() - 0.5) * 7;
       part.vy = (Math.random() - 0.5) * 7;
       part.isCluster = isCluster;
-      part.energy = isCluster ? 1.1 : 0.32;
+      part.energy = isCluster ? 1.25 : 0.35;
       part.radius = isCluster ? 9 : 4.5;
       part.hue = isCluster ? 44 : Config.NEON_HUES[Math.floor(Math.random() * Config.NEON_HUES.length)];
       part.pulsePhase = Math.random() * Math.PI * 2;
@@ -1285,6 +1675,11 @@
       this.renderer.renderMinimap(this.minimapCtx, this.state);
     }
 
+    // 60 FPS live electron fabrication progress bar
+    if (this.state.mode !== 'MENU' && this.state.player && this.state.player.alive) {
+      setScaleX(this._dom.hudElectronsBar, this.state.player.prodAccum % 1);
+    }
+
     this.hudAccum += dt;
     if (this.hudAccum >= 0.08 && this.state.mode !== 'MENU') {
       this.hudAccum = 0;
@@ -1314,14 +1709,24 @@
       this._zoneKillCb = function (killer, victim) {
         self._absorbNucleus(killer, victim);
       };
+      this._zoneMatchActiveCb = function () {
+        return self.state.mode !== 'VICTORY';
+      };
     }
-    st.zone.update(dt, st.aliveCount, nuclei, pool, fx, Audio, this._zoneKillCb);
+    st.zone.update(dt, st.aliveCount, nuclei, pool, fx, Audio, this._zoneKillCb, this._zoneMatchActiveCb);
 
-    // 2. Maintain ambient particles
+    // 2. Maintain ambient particles & Endless AI respawns
     st.ambientTimer += dt;
     if (st.ambientTimer >= 0.4) {
       st.ambientTimer = 0;
       this._maintainAmbient();
+    }
+    if (st.zone.endless && st.aliveCount < st.totalCount) {
+      st.respawnTimer += dt;
+      if (st.respawnTimer >= 2.2) {
+        st.respawnTimer = 0;
+        this._respawnOneEndlessAI();
+      }
     }
 
     // 3. Player input -> player nucleus
@@ -1354,7 +1759,7 @@
     }
 
     // 4. AI decisions
-    AI.update(dt, nuclei, st.ambient, st.zone, st.difficulty, st.world);
+    AI.update(dt, nuclei, st.ambient, st.zone, st.difficulty, st.world, st.gameMode);
 
     // 5. Update all alive nuclei
     var leader = null;
@@ -1443,22 +1848,23 @@
       // Collide against world walls & pillars
       Worlds.resolveCircle(st.world, nuc, nuc.radius, 0.35);
 
-      // Energy reactor zone boost
+      // Energy reactor zone boost & dynamic uncapped orbital crowding
+      Entities.updateDynamicOrbitAndProd(nuc);
       var eBoost = Worlds.getEnergyBoost(st.world, nuc.x, nuc.y);
       nuc._inReactor = eBoost.inZone;
       nuc._reactorMult = eBoost.prodMult;
 
-      // Electron production
+      // Unlimited electron production (rate scales with nucleus power & progressive crowding)
       nuc.prodAccum += nuc.prodRate * eBoost.prodMult * dt;
-      while (nuc.prodAccum >= 1 && nuc.electronCount < nuc.maxElectrons) {
-        nuc.prodAccum -= 1;
-        // Least populated shell (0, 1, 2)
+      while (nuc.prodAccum >= 1) {
+        var activeShells = Config.getActiveShells(nuc.electronCount);
         var sh = 0;
-        if (nuc.shellCounts[1] < nuc.shellCounts[sh]) sh = 1;
-        if (nuc.shellCounts[2] < nuc.shellCounts[sh]) sh = 2;
+        for (var sc = 1; sc < activeShells; sc++) {
+          if (nuc.shellCounts[sc] < nuc.shellCounts[sh]) sh = sc;
+        }
         var ang = Math.random() * Math.PI * 2;
-        var spawnR = nuc.radius + 6;
-        pool.spawn(
+        var spawnR = nuc.radius + 7;
+        var spawnedIdx = pool.spawn(
           nuc,
           nuc.x + Math.cos(ang) * spawnR,
           nuc.y + Math.sin(ang) * spawnR,
@@ -1466,11 +1872,14 @@
           nuc.vy * 0.5,
           sh,
           ang,
-          sh === 1 ? -1 : 1
+          sh % 2 === 1 ? -1 : 1
         );
-      }
-      if (nuc.electronCount >= nuc.maxElectrons && nuc.prodAccum > 1) {
-        nuc.prodAccum = 1;
+        nuc.prodAccum -= 1;
+        if (spawnedIdx === -1) {
+          nuc.prodAccum = 0.99;
+          break;
+        }
+        Entities.updateDynamicOrbitAndProd(nuc);
       }
 
       // Integrity regen out of combat inside safe zone
@@ -1535,6 +1944,68 @@
     }
   };
 
+  Engine.prototype._respawnOneEndlessAI = function () {
+    var st = this.state;
+    var nuclei = st.nuclei;
+    for (var i = 0; i < nuclei.length; i++) {
+      var nuc = nuclei[i];
+      if (nuc.alive || nuc.isPlayer || nuc.isRemotePlayer) continue;
+      var pos = this._findUnblockedSpawn(
+        st.world,
+        Config.ARENA_RADIUS * 0.42,
+        Config.ARENA_RADIUS - 220,
+        0,
+        Math.PI * 2,
+        nuclei,
+        44,
+        st.player
+      );
+      nuc.alive = true;
+      nuc.x = pos.x;
+      nuc.y = pos.y;
+      nuc.vx = 0;
+      nuc.vy = 0;
+      nuc.power = Config.START_POWER;
+      nuc.electronCount = 0;
+      nuc.prodAccum = 0;
+      nuc.kills = 0;
+      nuc.damageDealt = 0;
+      nuc.timeAlive = 0;
+      nuc.dashTimer = 0;
+      nuc.dashCd = 0;
+      nuc.lastDamagedTime = -100;
+      nuc.underSiegeTimer = 0;
+      nuc.lastAttackerId = -1;
+      nuc.hitFlash = 0;
+      nuc.stance = 'ORBIT';
+      nuc.personality = AI.pickRandomPersonality();
+      for (var sc = 0; sc < nuc.shellCounts.length; sc++) nuc.shellCounts[sc] = 0;
+      Entities.recalcStats(nuc);
+      nuc.hp = nuc.maxHp;
+
+      var startE = Config.START_ELECTRONS;
+      for (var e = 0; e < startE; e++) {
+        var sh = e % 2;
+        var ang = (e / startE) * Math.PI * 2 + Math.random() * 0.2;
+        var rad = nuc.orbitRadius * (0.68 + sh * 0.28);
+        var eIdx = st.electrons.spawn(
+          nuc,
+          nuc.x + Math.cos(ang) * rad,
+          nuc.y + Math.sin(ang) * rad,
+          0,
+          0,
+          sh,
+          ang,
+          sh === 1 ? -1 : 1
+        );
+        if (eIdx !== -1) Worlds.resolveElectron(st.world, st.electrons, eIdx);
+      }
+      Entities.updateDynamicOrbitAndProd(nuc);
+      st.aliveCount++;
+      break;
+    }
+  };
+
   Engine.prototype._updateElectrons = function (dt) {
     var st = this.state;
     var pool = st.electrons;
@@ -1574,6 +2045,7 @@
       owner._threatCount = 0;
       owner._shieldSlot = 0;
       if (!owner.alive) continue;
+      owner._activeShells = Config.getActiveShells(owner.electronCount);
 
       if (owner.stance === 'SHIELD') {
         shieldingList.push(owner);
@@ -1697,8 +2169,10 @@
       prevY[i] = py[i];
 
       var sh = shell[i];
+      var maxSh = Math.max(1, (ow._activeShells || 2) - 1);
+      var shFrac = Math.min(1, sh / maxSh);
       var dir = orbitDir[i];
-      var angVel = (ow.stance === 'SHIELD' ? 2.1 : 1.2 - sh * 0.18) * speedFactor[i] * dir;
+      var angVel = (ow.stance === 'SHIELD' ? 2.1 : 1.26 - shFrac * 0.42) * speedFactor[i] * dir;
       orbitAngle[i] += angVel * dt;
       var ang = orbitAngle[i];
 
@@ -1726,19 +2200,19 @@
           // Directional phalanx arc (80% front threat side, 20% rear guard)
           if (slot % 5 === 0) {
             var rearAngle = ow.shieldThreatAngle + Math.PI + Math.sin(ang * 0.9 + phase[i]) * 1.25;
-            var rearR = ow.orbitRadius * 0.54;
+            var rearR = ow.orbitRadius * (0.48 + shFrac * 0.14);
             tx = ow.x + Math.cos(rearAngle) * rearR;
             ty = ow.y + Math.sin(rearAngle) * rearR;
           } else {
             var frontAngle = ow.shieldThreatAngle + Math.sin(ang * 1.1 + phase[i]) * 1.15;
-            var frontR = ow.orbitRadius * 0.56;
+            var frontR = ow.orbitRadius * (0.50 + shFrac * 0.16);
             tx = ow.x + Math.cos(frontAngle) * frontR;
             ty = ow.y + Math.sin(frontAngle) * frontR;
           }
           steerRate = 9.5;
           maxSpeed = ow.moveSpeed + 250;
         } else {
-          var sr = ow.orbitRadius * Config.SHIELD_ORBIT_MULT * (0.9 + sh * 0.08);
+          var sr = ow.orbitRadius * Config.SHIELD_ORBIT_MULT * (0.84 + shFrac * 0.24);
           tx = ow.x + Math.cos(ang) * sr;
           ty = ow.y + Math.sin(ang) * sr;
           steerRate = 8.8;
@@ -1753,15 +2227,17 @@
         var cx = ow.x + (adx / aLen) * projDist;
         var cy = ow.y + (ady / aLen) * projDist;
 
-        // Swirl around assault focal point with subtle forward lance spread
-        var swirlR = (18 + sh * 14) + Math.sin(time * 6 + phase[i]) * 8;
+        // Swirl around assault focal point with multi-shell scaling for large clouds
+        var swirlR = 18 + shFrac * (26 + Math.sqrt(ow.electronCount) * 1.6) + Math.sin(time * 6 + phase[i]) * 8;
         tx = cx + Math.cos(ang * 1.4) * swirlR;
         ty = cy + Math.sin(ang * 1.4) * swirlR;
         steerRate = 7.5;
         maxSpeed = ow.moveSpeed + 250;
       } else {
-        // ORBIT mode with local auto-aggression on facing side
-        var orbitR = ow.orbitRadius * (0.72 + sh * 0.22) + Math.sin(time * 3 + phase[i]) * 4;
+        // ORBIT mode across up to 6 concentric shells with local auto-aggression on facing side
+        var innerOrbit = ow.radius + 22;
+        var outerOrbit = Math.max(innerOrbit + 14, ow.orbitRadius);
+        var orbitR = innerOrbit + (outerOrbit - innerOrbit) * shFrac + Math.sin(time * 3 + phase[i]) * 4;
         tx = ow.x + Math.cos(ang) * orbitR;
         ty = ow.y + Math.sin(ang) * orbitR;
 
@@ -1897,9 +2373,9 @@
 
       if (collector) {
         p.active = false;
-        var prevMaxE = collector.maxElectrons;
+        var rawGain = p.isCluster ? Config.AMBIENT_CLUSTER_PROD_GAIN : Config.AMBIENT_PROD_GAIN;
         collector.power += p.energy;
-        collector.prodAccum += p.isCluster ? Config.AMBIENT_CLUSTER_PROD_GAIN : Config.AMBIENT_PROD_GAIN;
+        collector.prodAccum += rawGain * Math.max(0.32, collector.crowdMult || 1);
         collector.hp = Math.min(collector.maxHp, collector.hp + (p.isCluster ? 4.5 : 1.5));
         Entities.recalcStats(collector);
 
@@ -1917,16 +2393,16 @@
 
         if (collector.isPlayer) {
           Audio.playPickup(p.isCluster);
-          if (collector.maxElectrons > prevMaxE) {
+          if (p.isCluster) {
             Entities.spawnFloatingText(
               st.fx,
               collector.x,
               collector.y - collector.radius - 28,
-              '+1 MAX ÉLECTRON',
+              '⚡ AMAS QUANTIQUE',
               '',
-              '#7affd4',
+              '#ffe066',
               0.85,
-              1.05
+              1.0
             );
           }
         }
@@ -2174,8 +2650,7 @@
     Entities.spawnShockwave(fx, victim.x, victim.y, victim.radius * 0.4, victim.radius * 3.8, victim.hue, 0.45, 3.5, false);
 
     if (killer && killer.alive) {
-      var oldMaxE = killer.maxElectrons;
-      var oldProd = killer.prodRate;
+      var oldBaseProd = killer.baseProdRate;
 
       killer.power += victim.power * Config.ABSORB_POWER_GAIN_RATIO + Config.ABSORB_BASE_POWER_BONUS;
       killer.kills++;
@@ -2183,12 +2658,10 @@
 
       killer.hp = Math.min(killer.maxHp, killer.hp + killer.maxHp * Config.ABSORB_HEAL_RATIO);
 
-      var bonusE = Math.min(
-        killer.maxElectrons - killer.electronCount,
-        Math.ceil(victim.maxElectrons * Config.ABSORB_BONUS_ELECTRON_RATIO)
-      );
+      var bonusE = Math.max(2, Math.round(3 + Math.sqrt(victim.power) * 0.9));
+      var actSh = Config.getActiveShells(killer.electronCount + bonusE);
       for (var b = 0; b < bonusE; b++) {
-        var sh = b % 3;
+        var sh = b % actSh;
         var a = Math.random() * Math.PI * 2;
         var r = killer.radius + 10;
         pool.spawn(
@@ -2199,15 +2672,15 @@
           0,
           sh,
           a,
-          sh === 1 ? -1 : 1
+          sh % 2 === 1 ? -1 : 1
         );
       }
+      Entities.updateDynamicOrbitAndProd(killer);
 
       // Implosion shockwave on killer
       Entities.spawnShockwave(fx, killer.x, killer.y, killer.radius, killer.radius * 3.2, killer.hue, 0.42, 4, true);
 
-      var dMax = killer.maxElectrons - oldMaxE;
-      var dProd = killer.prodRate - oldProd;
+      var dProd = Math.max(0.05, killer.baseProdRate - oldBaseProd);
 
       if (killer.isPlayer) {
         this.renderer.addShake(6.5, 0.22);
@@ -2217,7 +2690,7 @@
           killer.x,
           killer.y - killer.radius - 34,
           'ABSORBÉ !',
-          '+' + dMax + ' Cap. max • +' + dProd.toFixed(1) + '/s',
+          '+' + bonusE + ' ⚡ • +' + dProd.toFixed(2) + ' ⚡/s',
           '#00f0ff',
           1.15,
           2.0
@@ -2229,8 +2702,8 @@
           y: Math.round(killer.y),
           r: Math.round(killer.radius),
           hue: killer.hue,
-          dMax: dMax,
-          dProd: Number(dProd.toFixed(1)),
+          dMax: bonusE,
+          dProd: Number(dProd.toFixed(2)),
           scale: Number((1 + victim.power * 0.02).toFixed(2))
         });
       } else {
@@ -2255,13 +2728,19 @@
       });
     }
 
+    // In Endless mode, ensure arena never runs out of AI challengers
+    if (st.zone.endless && !victim.isPlayer && !victim.isRemotePlayer) {
+      if (st.player && st.player.alive && !this._hasEnemyAlive(st.player)) {
+        this._respawnOneEndlessAI();
+        this._respawnOneEndlessAI();
+      }
+    }
+
     // Check match end conditions if player is in game (or Host keeping match alive for Guest)
     if (st.mode === 'PLAYING') {
       if (victim.isPlayer) {
         this._finishMatch(false, killer ? killer.name : 'Zone Quantique');
-      } else if (st.player && st.player.alive && !this._hasEnemyAlive(st.player)) {
-        // Victory once every survivor is on the player's side
-        // (3-color teams, Solo duo with a friend, or plain last-one-standing)
+      } else if (!st.zone.endless && st.player && st.player.alive && !this._hasEnemyAlive(st.player)) {
         if (st.mp.active && st.mp.role === 'host' && st.mp.connected) {
           var gNuc = st.nuclei[st.mp.friendId];
           if (gNuc && Entities.areAllies(gNuc, st.player)) {
@@ -2270,7 +2749,7 @@
         }
         this._finishMatch(true, '');
       }
-    } else if (st.mp.active && st.mp.role === 'host' && st.mp.connected) {
+    } else if (!st.zone.endless && st.mp.active && st.mp.role === 'host' && st.mp.connected) {
       var guestN = st.nuclei[st.mp.friendId];
       if (guestN && guestN.alive && !this._hasEnemyAlive(guestN)) {
         Net.send({ t: 'end', victory: true });
@@ -2308,15 +2787,32 @@
     if (victory) {
       Audio.playVictory();
       this.setMode('VICTORY');
-      if (st.gameMode === 'teams' && player && player.team !== -1) {
-        var teamInfo = Config.TEAMS[player.team];
-        var teamSurvivors = 0;
+      var teamSurvivors = 0;
+      if (player && player.team !== -1) {
         for (var ts = 0; ts < st.nuclei.length; ts++) {
           if (st.nuclei[ts].alive && st.nuclei[ts].team === player.team) teamSurvivors++;
         }
+      }
+      if (st.gameMode === 'teams' && player && player.team >= 0) {
+        var teamInfo = Config.TEAMS[player.team] || Config.TEAMS[0];
         this._dom.endTitle.textContent = 'VICTOIRE — ÉQUIPE ' + teamInfo.name.toUpperCase() + ' !';
         this._dom.endSubtitle.textContent =
           'Votre équipe a éliminé les deux autres couleurs (' + teamSurvivors + ' survivant(s)).';
+      } else if (st.gameMode === 'clash' && player && player.team >= 0) {
+        var clashInfo = Config.CLASH_TEAMS[player.team] || Config.CLASH_TEAMS[0];
+        this._dom.endTitle.textContent = 'VICTOIRE — ' + clashInfo.label.toUpperCase() + ' !';
+        this._dom.endSubtitle.textContent =
+          'Votre armée a remporté la bataille frontale (' + teamSurvivors + ' survivant(s)).';
+      } else if ((st.gameMode === 'trios' || st.gameMode === 'duos') && player && player.team >= 0) {
+        var sqInfo = Config.SQUADS[player.team % Config.SQUADS.length];
+        this._dom.endTitle.textContent =
+          'VICTOIRE — ESCOUADE [' + sqInfo.tag + '] ' + sqInfo.name.toUpperCase() + ' !';
+        this._dom.endSubtitle.textContent =
+          (st.gameMode === 'trios'
+            ? 'Votre trio a triomphé des 19 autres escouades ('
+            : 'Votre duo a éliminé les 24 autres binômes (') +
+          teamSurvivors +
+          ' survivant(s)).';
       } else if (player && player.team === Config.DUO_TEAM) {
         this._dom.endTitle.textContent = 'VICTOIRE EN DUO !';
         this._dom.endSubtitle.textContent = 'Votre duo a absorbé tous les autres noyaux de l\'arène.';
@@ -2338,7 +2834,9 @@
     this._dom.endRank.textContent = '#' + rank + ' / ' + st.totalCount;
     this._dom.endKills.textContent = player ? String(player.kills) : '0';
     this._dom.endPeakElectrons.textContent = player ? String(player.peakElectrons) : '0';
-    this._dom.endPeakProd.textContent = player ? player.peakProdRate.toFixed(1) + '/s' : '0/s';
+    this._dom.endPeakProd.textContent = player
+      ? (player.peakProdRate < 1 ? player.peakProdRate.toFixed(2) : player.peakProdRate.toFixed(1)) + '/s'
+      : '0/s';
     this._dom.endTime.textContent = formatTime(player ? player.timeAlive : st.elapsedTime);
 
     this._saveBestRecord(rank, player ? player.kills : 0, victory);
@@ -2414,6 +2912,9 @@
       if (n.dashCd > 0) n.dashCd = Math.max(0, n.dashCd - dt);
       if (n.hitFlash > 0) n.hitFlash = Math.max(0, n.hitFlash - dt * 5);
       if (n.underSiegeTimer > 0) n.underSiegeTimer = Math.max(0, n.underSiegeTimer - dt);
+      if (n.isPlayer) {
+        n.prodAccum = (n.prodAccum + n.prodRate * (n._reactorMult || 1) * dt) % 1;
+      }
     }
 
     // Extrapolate local electron trails at 60 FPS between 20 Hz snapshots
@@ -2443,8 +2944,14 @@
     st.worldSeed = msg.seed || 1337;
     st.gameMode = msg.gameMode || 'teams';
     st.difficulty = msg.difficulty || 'standard';
+    if (typeof msg.zoneStartDelay === 'number') st.zoneStartDelay = msg.zoneStartDelay;
+    if (typeof msg.zoneShrinkSpeed === 'number') st.zoneShrinkSpeed = msg.zoneShrinkSpeed;
+    var gModeMeta = Config.getModeMeta(st.gameMode);
     st.world = Worlds.generate(st.worldId, st.worldSeed);
-    st.zone.reset(st.world);
+    st.zone.reset(st.world, gModeMeta.endless, {
+      startDelay: st.zoneStartDelay,
+      shrinkSpeed: st.zoneShrinkSpeed
+    });
     st.nuclei = [];
     st.electrons.reset();
     st.killFeed = [];
@@ -2452,6 +2959,7 @@
     st.spectateTarget = null;
     st.leaderId = -1;
     st.mp.friendId = msg.hostId;
+    this._lastSquadMatesHtml = '';
 
     var i;
     for (i = 0; i < st.fx.sparks.length; i++) st.fx.sparks[i].active = false;
@@ -2464,7 +2972,7 @@
     for (i = 0; i < meta.length; i++) {
       var m = meta[i];
       var isSelf = m.id === msg.guestId;
-      var nuc = Entities.createNucleus(m.id, m.name, m.x, m.y, m.hue, isSelf, 'PLAYER', m.team);
+      var nuc = Entities.createNucleus(m.id, m.name, m.x, m.y, m.hue, isSelf, 'PLAYER', m.team, m.squadTag || '', 0);
       nuc.netX = m.x;
       nuc.netY = m.y;
       if (m.id === msg.hostId) nuc.isFriend = true;
@@ -2513,8 +3021,8 @@
         Math.round(n.hp * 10),
         Math.round(n.maxHp * 10),
         n.electronCount,
-        n.maxElectrons,
-        Math.round(n.prodRate * 10),
+        Math.round((n.prodAccum % 1) * 1000),
+        Math.round(n.prodRate * 100),
         Math.round(n.power * 10),
         n.kills,
         stanceIdx,
@@ -2528,7 +3036,7 @@
       ]);
     }
 
-    // 2. Pack electrons near Guest viewport (max 1000 * 5 Int16 = 10 KB)
+    // 2. Pack electrons near Guest viewport (max 1400 * 5 Int16 = 14 KB)
     var pool = st.electrons;
     var high = pool.highWater;
     var active = pool.active;
@@ -2537,9 +3045,10 @@
     var evx = pool.vx;
     var evy = pool.vy;
     var oid = pool.ownerId;
-    var maxDistSq = 1650 * 1650;
+    var snapSpan = Math.max(1650, (focus ? focus.orbitRadius * 6 + 1100 : 1650));
+    var maxDistSq = snapSpan * snapSpan;
     var eIndices = [];
-    for (var e = 0; e < high && eIndices.length < 1000; e++) {
+    for (var e = 0; e < high && eIndices.length < 1400; e++) {
       if (!active[e]) continue;
       var dx = ex[e] - fxX;
       var dy = ey[e] - fxY;
@@ -2590,7 +3099,7 @@
         Math.round(z.targetX),
         Math.round(z.targetY),
         Math.round(z.targetRadius),
-        z.state === 'HOLD' ? 0 : z.state === 'SHRINK' ? 1 : 2,
+        z.state === 'HOLD' ? 0 : z.state === 'SHRINK' ? 1 : z.state === 'ENDLESS' ? 3 : 2,
         Math.round(z.timer * 10)
       ],
       kf: st.killFeed.map(function (k) {
@@ -2632,10 +3141,10 @@
       nuc.hp = row[7] / 10;
       nuc.maxHp = row[8] / 10;
       nuc.electronCount = row[9];
-      nuc.maxElectrons = row[10];
-      nuc.prodRate = row[11] / 10;
+      nuc.prodAccum = (row[10] || 0) / 1000;
+      nuc.prodRate = row[11] / 100;
       nuc.power = row[12] / 10;
-      nuc.orbitRadius = Config.getOrbitRadius(nuc.power);
+      nuc.orbitRadius = Config.getOrbitRadius(nuc.power, nuc.electronCount);
       nuc.kills = row[13];
       nuc.stance = row[14] === 1 ? 'ASSAULT' : row[14] === 2 ? 'SHIELD' : 'ORBIT';
       nuc.aimX = row[15];
@@ -2666,7 +3175,8 @@
       z.targetX = msg.z[3];
       z.targetY = msg.z[4];
       z.targetRadius = msg.z[5];
-      z.state = msg.z[6] === 0 ? 'HOLD' : msg.z[6] === 1 ? 'SHRINK' : 'FINAL';
+      z.state = msg.z[6] === 0 ? 'HOLD' : msg.z[6] === 1 ? 'SHRINK' : msg.z[6] === 3 ? 'ENDLESS' : 'FINAL';
+      z.endless = z.state === 'ENDLESS';
       z.timer = msg.z[7] / 10;
     }
 
@@ -2720,7 +3230,7 @@
             ev.x,
             ev.y - ev.r - 34,
             'ABSORBÉ !',
-            '+' + ev.dMax + ' Cap. max • +' + ev.dProd + '/s',
+            '+' + ev.dMax + ' ⚡ • +' + ev.dProd + ' ⚡/s',
             '#00f0ff',
             1.15,
             2.0
@@ -2738,19 +3248,27 @@
   };
 
   Engine.prototype._cycleSpectateTarget = function () {
-    var nuclei = this.state.nuclei;
+    var st = this.state;
+    var nuclei = st.nuclei;
     var alive = [];
     for (var i = 0; i < nuclei.length; i++) {
       if (nuclei[i].alive) alive.push(nuclei[i]);
     }
     if (alive.length === 0) return;
-    alive.sort(function (a, b) { return b.power - a.power; });
-    var cur = this.state.spectateTarget;
+    var player = st.player;
+    alive.sort(function (a, b) {
+      var aAlly = player && Entities.areAllies(player, a) ? 1 : 0;
+      var bAlly = player && Entities.areAllies(player, b) ? 1 : 0;
+      if (aAlly !== bAlly) return bAlly - aAlly;
+      return b.power - a.power;
+    });
+    var cur = st.spectateTarget;
     var idx = cur ? alive.indexOf(cur) : -1;
     var next = alive[(idx + 1) % alive.length];
-    this.state.spectateTarget = next;
+    st.spectateTarget = next;
     if (this._dom.spectateName) {
-      setText(this._dom.spectateName, next.name + ' (⚡ ' + next.electronCount + ')');
+      var tag = next.squadTag ? '[' + next.squadTag + '] ' : '';
+      setText(this._dom.spectateName, tag + next.name + ' (⚡ ' + next.electronCount + ')');
     }
   };
 
@@ -2813,41 +3331,110 @@
     // Alive counter
     setText(dom.hudAlive, st.aliveCount + ' / ' + st.totalCount);
 
-    // Team scoreboard update
+    // Army scoreboard update (3 Équipes / 2 Camps)
     if (dom.teamScoreboard) {
-      var showTeams = st.gameMode === 'teams';
-      setHidden(dom.teamScoreboard, !showTeams);
-      if (showTeams) {
+      var showArmies = st.gameMode === 'teams' || st.gameMode === 'clash';
+      setHidden(dom.teamScoreboard, !showArmies);
+      if (showArmies) {
+        var armyList = st.gameMode === 'clash' ? Config.CLASH_TEAMS : Config.TEAMS;
+        var armyLen = armyList.length;
         var counts = [0, 0, 0];
         for (var ti = 0; ti < st.nuclei.length; ti++) {
           var tn = st.nuclei[ti];
-          if (tn.alive && tn.team >= 0 && tn.team < 3) counts[tn.team]++;
+          if (tn.alive && tn.team >= 0 && tn.team < armyLen) counts[tn.team]++;
         }
         var totalAliveTeams = counts[0] + counts[1] + counts[2];
         for (var tc = 0; tc < 3; tc++) {
-          if (dom.teamCounts[tc]) setText(dom.teamCounts[tc], String(counts[tc]));
-          if (dom.teamBars[tc]) {
-            var pct = totalAliveTeams > 0 ? (counts[tc] / totalAliveTeams) * 100 : 0;
-            setWidthPct(dom.teamBars[tc], pct);
+          var activeSlot = tc < armyLen;
+          setHidden(dom.teamPills[tc], !activeSlot);
+          setHidden(dom.teamBars[tc], !activeSlot);
+          if (activeSlot) {
+            var aInfo = armyList[tc];
+            if (dom.teamLbls[tc]) setText(dom.teamLbls[tc], aInfo.name);
+            if (dom.teamPips[tc] && dom.teamPips[tc]._hex !== aInfo.hex) {
+              dom.teamPips[tc]._hex = aInfo.hex;
+              dom.teamPips[tc].style.background = aInfo.hex;
+              dom.teamPips[tc].style.boxShadow = '0 0 8px ' + aInfo.hex;
+            }
+            if (dom.teamBars[tc] && dom.teamBars[tc]._hex !== aInfo.hex) {
+              dom.teamBars[tc]._hex = aInfo.hex;
+              dom.teamBars[tc].style.background = aInfo.hex;
+            }
+            if (dom.teamCounts[tc]) setText(dom.teamCounts[tc], String(counts[tc]));
+            if (dom.teamBars[tc]) {
+              var pct = totalAliveTeams > 0 ? (counts[tc] / totalAliveTeams) * 100 : 0;
+              setWidthPct(dom.teamBars[tc], pct);
+            }
           }
+        }
+      }
+    }
+
+    // Squad scoreboard update (Trios 20x3 / Duos 25x2)
+    if (dom.squadScoreboard) {
+      var isSqMode = st.gameMode === 'trios' || st.gameMode === 'duos';
+      setHidden(dom.squadScoreboard, !isSqMode);
+      if (isSqMode) {
+        var modeMeta = Config.getModeMeta(st.gameMode);
+        var marks = this._squadAliveMarks;
+        marks.fill(0);
+        var squadsAlive = 0;
+        for (var si = 0; si < st.nuclei.length; si++) {
+          var sn = st.nuclei[si];
+          if (sn.alive && sn.team >= 0 && sn.team < marks.length) {
+            if (!marks[sn.team]) {
+              marks[sn.team] = 1;
+              squadsAlive++;
+            }
+          }
+        }
+        setText(dom.squadKindLbl, st.gameMode === 'trios' ? 'Escouades' : 'Duos');
+        setText(dom.squadAliveCount, squadsAlive + ' / ' + modeMeta.teamCount);
+
+        var myTeam = player ? player.team : 0;
+        var matesHtml = '';
+        for (var mi = 0; mi < st.nuclei.length; mi++) {
+          var mate = st.nuclei[mi];
+          if (mate.team !== myTeam || mate === player) continue;
+          if (mate.alive) {
+            matesHtml +=
+              '<div class="mate-chip"><span class="mate-diamond">◆</span><span>' +
+              this._escapeHtml(mate.name) +
+              '</span><span class="mate-elec">⚡' +
+              mate.electronCount +
+              '</span></div>';
+          } else {
+            matesHtml +=
+              '<div class="mate-chip dead"><span>✕ ' +
+              this._escapeHtml(mate.name) +
+              '</span></div>';
+          }
+        }
+        if (matesHtml !== this._lastSquadMatesHtml) {
+          this._lastSquadMatesHtml = matesHtml;
+          dom.squadMatesRow.innerHTML = matesHtml;
         }
       }
     }
 
     // Zone status
     var z = st.zone;
-    if (z.state === 'HOLD') {
+    if (z.state === 'ENDLESS' || z.endless) {
+      setText(dom.hudZoneLabel, 'Arène infinie');
+      setClass(dom.hudZoneLabel, 'zone-status stable');
+      setText(dom.hudZoneTimer, '∞');
+    } else if (z.state === 'HOLD') {
       setText(dom.hudZoneLabel, 'Zone stable');
       setClass(dom.hudZoneLabel, 'zone-status stable');
       setText(dom.hudZoneTimer, formatTime(Math.ceil(z.timer)));
     } else if (z.state === 'SHRINK') {
-      setText(dom.hudZoneLabel, 'Rétrécissement !');
+      setText(dom.hudZoneLabel, z.targetRadius <= 0 ? 'Fermeture totale !' : 'Rétrécissement !');
       setClass(dom.hudZoneLabel, 'zone-status shrinking');
       setText(dom.hudZoneTimer, formatTime(Math.ceil(z.timer)));
     } else {
-      setText(dom.hudZoneLabel, 'Zone finale');
-      setClass(dom.hudZoneLabel, 'zone-status final');
-      setText(dom.hudZoneTimer, '∞');
+      setText(dom.hudZoneLabel, 'Zone rouge totale !');
+      setClass(dom.hudZoneLabel, 'zone-status shrinking');
+      setText(dom.hudZoneTimer, '🔥');
     }
 
     // Sort alive nuclei for leaderboard & player rank (reuse scratch array)
@@ -2864,7 +3451,8 @@
     for (var r = 0; r < topCount; r++) {
       var item = aliveList[r];
       var cls = item.isPlayer ? 'lb-row is-player' : 'lb-row';
-      var dispName = (item.isFriend ? '★ ' : '') + item.name;
+      var dispTag = item.squadTag ? '[' + item.squadTag + '] ' : '';
+      var dispName = (item.isFriend ? '★ ' : '') + dispTag + item.name;
       lbHtml +=
         '<div class="' +
         cls +
@@ -2897,10 +3485,9 @@
     if (player && player.alive) {
       var pRank = aliveList.indexOf(player) + 1;
       setText(dom.hudRank, '#' + (pRank > 0 ? pRank : '-'));
-      setText(dom.hudElectrons, player.electronCount + ' / ' + player.maxElectrons);
-      setScaleX(dom.hudElectronsBar, player.electronCount / Math.max(1, player.maxElectrons));
+      setText(dom.hudElectrons, '⚡ ' + player.electronCount);
       var effProd = player.prodRate * (player._reactorMult || 1);
-      setText(dom.hudProd, '+' + effProd.toFixed(1) + ' /s');
+      setText(dom.hudProd, '+' + (effProd < 1 ? effProd.toFixed(2) : effProd.toFixed(1)) + ' /s');
       if (dom.reactorBadge) {
         setHidden(dom.reactorBadge, !player._inReactor);
       }
@@ -2909,7 +3496,16 @@
       setText(dom.hudPower, String(Math.floor(player.power)));
       setText(dom.hudKills, String(player.kills));
 
-      setHidden(dom.zoneWarningBanner, !z.isOutside(player.x, player.y));
+      var outOfSafe = z.isOutside(player.x, player.y);
+      setHidden(dom.zoneWarningBanner, !outOfSafe);
+      if (outOfSafe) {
+        setText(
+          dom.zoneWarningBanner,
+          z.state === 'FINAL' || z.radius <= 0.5
+            ? '🔥 ZONE ENTIÈREMENT ROUGE — TOUS LES NOYAUX PERDENT DES PV !'
+            : '⚠️ HORS DE LA ZONE QUANTIQUE — REJOIGNEZ LE CERCLE SÛR'
+        );
+      }
 
       // Tactical bar
       setToggle(dom.skillAssault, 'active', player.stance === 'ASSAULT');
@@ -2931,7 +3527,8 @@
       setHidden(dom.zoneWarningBanner, true);
       if (dom.reactorBadge) setHidden(dom.reactorBadge, true);
       if (st.mode === 'SPECTATING' && st.spectateTarget && dom.spectateName) {
-        setText(dom.spectateName, st.spectateTarget.name + ' (⚡ ' + st.spectateTarget.electronCount + ')');
+        var spTag = st.spectateTarget.squadTag ? '[' + st.spectateTarget.squadTag + '] ' : '';
+        setText(dom.spectateName, spTag + st.spectateTarget.name + ' (⚡ ' + st.spectateTarget.electronCount + ')');
       }
     }
 

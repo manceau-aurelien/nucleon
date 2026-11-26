@@ -331,7 +331,7 @@
     var targetZoom = 1;
     if (target) {
       var span = target.orbitRadius * 2.1;
-      targetZoom = Math.max(0.46, Math.min(1.02, 260 / Math.max(190, span)));
+      targetZoom = Math.max(0.28, Math.min(1.02, 260 / Math.max(190, span)));
     }
 
     var lerpPos = 1 - Math.exp(-8.5 * dt);
@@ -486,7 +486,17 @@
   };
 
   Renderer.prototype._drawZone = function (ctx, zone, time, minX, maxX, minY, maxY) {
-    var zr = Math.max(10, zone.radius);
+    if (zone.endless) return;
+    var pulse = 0.65 + 0.35 * Math.sin(time * 4.5);
+
+    // Total collapse: the safe circle has shrunk to 0 -> the entire arena is crimson red!
+    if (zone.radius <= 0.5 || zone.state === 'FINAL') {
+      ctx.fillStyle = 'rgba(255, 18, 68, ' + (0.17 + 0.06 * pulse).toFixed(3) + ')';
+      ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+      return;
+    }
+
+    var zr = zone.radius;
     var zrSq = zr * zr;
     var dxMin = minX - zone.x;
     var dxMax = maxX - zone.x;
@@ -504,40 +514,50 @@
       ctx.beginPath();
       ctx.rect(minX, minY, maxX - minX, maxY - minY);
       ctx.arc(zone.x, zone.y, zr, 0, Math.PI * 2, true);
-      ctx.fillStyle = 'rgba(255, 22, 85, 0.14)';
+      ctx.fillStyle = 'rgba(255, 20, 75, 0.16)';
       ctx.fill('evenodd');
       ctx.restore();
     }
 
-    // Next safe zone dashed preview
-    if (
-      zone.state !== 'FINAL' &&
-      Math.abs(zone.targetRadius - zone.radius) > 4 &&
-      ringVisible(zone.targetX, zone.targetY, zone.targetRadius, minX, maxX, minY, maxY)
-    ) {
-      ctx.save();
-      ctx.setLineDash([14, 14]);
-      ctx.lineDashOffset = -time * 28;
-      ctx.beginPath();
-      ctx.arc(zone.targetX, zone.targetY, zone.targetRadius, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.24)';
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
-      ctx.restore();
+    // Next safe zone dashed preview (or collapse crosshair when targetRadius == 0)
+    if (zone.state !== 'FINAL' && Math.abs(zone.targetRadius - zone.radius) > 4) {
+      if (zone.targetRadius <= 1) {
+        if (zone.targetX >= minX && zone.targetX <= maxX && zone.targetY >= minY && zone.targetY <= maxY) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 90, 130, 0.55)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(zone.targetX - 14, zone.targetY);
+          ctx.lineTo(zone.targetX + 14, zone.targetY);
+          ctx.moveTo(zone.targetX, zone.targetY - 14);
+          ctx.lineTo(zone.targetX, zone.targetY + 14);
+          ctx.stroke();
+          ctx.restore();
+        }
+      } else if (ringVisible(zone.targetX, zone.targetY, zone.targetRadius, minX, maxX, minY, maxY)) {
+        ctx.save();
+        ctx.setLineDash([14, 14]);
+        ctx.lineDashOffset = -time * 28;
+        ctx.beginPath();
+        ctx.arc(zone.targetX, zone.targetY, zone.targetRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.24)';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
 
-    // Pulsing magenta energy border
+    // Pulsing magenta/crimson energy border
     if (!ringVisible(zone.x, zone.y, zr, minX, maxX, minY, maxY)) return;
-    var pulse = 0.65 + 0.35 * Math.sin(time * 4.5);
     ctx.beginPath();
-    ctx.arc(zone.x, zone.y, Math.max(10, zone.radius), 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 45, 135, ' + (0.65 * pulse).toFixed(3) + ')';
+    ctx.arc(zone.x, zone.y, zr, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 38, 115, ' + (0.72 * pulse).toFixed(3) + ')';
     ctx.lineWidth = 6;
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(zone.x, zone.y, Math.max(10, zone.radius), 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(255, 180, 220, 0.7)';
+    ctx.arc(zone.x, zone.y, zr, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 185, 215, 0.75)';
     ctx.lineWidth = 1.6;
     ctx.stroke();
   };
@@ -721,8 +741,11 @@
     var oid = pool.ownerId;
     var px = pool.x;
     var py = pool.y;
+    var stride = player.electronCount > 72 ? Math.ceil(player.electronCount / 72) : 1;
+    var seen = 0;
     for (var i = 0; i < high; i++) {
       if (active[i] && oid[i] === player.id) {
+        if ((seen++ % stride) !== 0) continue;
         if (count >= tPool.length) tPool.push({ x: 0, y: 0, a: 0 });
         var pt = tPool[count];
         pt.x = px[i];
@@ -980,12 +1003,14 @@
       ctx.font = (n.isPlayer || n.isFriend ? '700 13px ' : '600 12px ') + 'Inter, system-ui, sans-serif';
       var labelY = ny - r - 15;
 
-      // Label string rebuilt only when friend/leader status or name changes
+      // Label string rebuilt only when friend/leader/tag status or name changes
       var labelKey = (n.isFriend ? 1 : 0) | (n.id === leaderId ? 2 : 0);
-      if (n._labelKey !== labelKey || n._labelName !== n.name) {
+      if (n._labelKey !== labelKey || n._labelName !== n.name || n._labelTag !== n.squadTag) {
         n._labelKey = labelKey;
         n._labelName = n.name;
-        n._labelText = (n.isFriend ? '★ ' : '') + (labelKey & 2 ? '👑 ' : '') + n.name;
+        n._labelTag = n.squadTag;
+        var tagPrefix = n.squadTag ? '[' + n.squadTag + '] ' : '';
+        n._labelText = (n.isFriend ? '★ ' : '') + (labelKey & 2 ? '👑 ' : '') + tagPrefix + n.name;
       }
       var labelText = n._labelText;
       ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
@@ -1056,6 +1081,7 @@
   Renderer.prototype._drawSurvivorPointers = function (ctx, state, camX, camY, zoom, w, h) {
     var nuclei = state.nuclei;
     var player = state.player;
+    var isSquadMode = state.gameMode === 'trios' || state.gameMode === 'duos';
     var enemyCount = 0;
     for (var ec = 0; ec < nuclei.length; ec++) {
       if (nuclei[ec].alive && !nuclei[ec].isPlayer && !Entities.areAllies(player, nuclei[ec])) {
@@ -1069,8 +1095,10 @@
 
     for (var i = 0; i < nuclei.length; i++) {
       var n = nuclei[i];
-      if (!n.alive || n.isPlayer || Entities.areAllies(player, n)) continue;
-      if (!showAll && n.id !== state.leaderId) continue;
+      if (!n.alive || n.isPlayer) continue;
+      var isAlly = Entities.areAllies(player, n);
+      if (isAlly && !isSquadMode && !n.isFriend) continue;
+      if (!isAlly && !showAll && n.id !== state.leaderId) continue;
 
       var sx = (n.x - camX) * zoom + w * 0.5;
       var sy = (n.y - camY) * zoom + h * 0.5;
@@ -1091,7 +1119,13 @@
       ctx.save();
       ctx.translate(px, py);
       ctx.rotate(angle);
-      ctx.fillStyle = n.id === state.leaderId ? '#ffd54f' : 'hsla(' + n.hue + ', 100%, 65%, 0.85)';
+      if (isAlly) {
+        ctx.fillStyle = '#7affd4';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.4;
+      } else {
+        ctx.fillStyle = n.id === state.leaderId ? '#ffd54f' : 'hsla(' + n.hue + ', 100%, 65%, 0.85)';
+      }
       ctx.beginPath();
       ctx.moveTo(10, 0);
       ctx.lineTo(-7, -6);
@@ -1099,6 +1133,7 @@
       ctx.lineTo(-7, 6);
       ctx.closePath();
       ctx.fill();
+      if (isAlly) ctx.stroke();
       ctx.restore();
     }
   };
@@ -1203,38 +1238,49 @@
       }
     }
 
-    // Current safe zone
-    var zx = half + zone.x * scale;
-    var zy = half + zone.y * scale;
-    var zr = Math.max(2, zone.radius * scale);
-    minimapCtx.strokeStyle = 'rgba(255, 45, 135, 0.85)';
-    minimapCtx.lineWidth = 1.6;
-    minimapCtx.beginPath();
-    minimapCtx.arc(zx, zy, zr, 0, Math.PI * 2);
-    minimapCtx.stroke();
+    // Current safe zone (or full crimson radar wash once collapsed to 0!)
+    if (!zone.endless) {
+      if (zone.radius <= 0.5 || zone.state === 'FINAL') {
+        minimapCtx.fillStyle = 'rgba(255, 24, 75, 0.30)';
+        minimapCtx.beginPath();
+        minimapCtx.arc(half, half, mapR, 0, Math.PI * 2);
+        minimapCtx.fill();
+      } else {
+        var zx = half + zone.x * scale;
+        var zy = half + zone.y * scale;
+        var zr = Math.max(1.5, zone.radius * scale);
+        minimapCtx.strokeStyle = 'rgba(255, 45, 135, 0.85)';
+        minimapCtx.lineWidth = 1.6;
+        minimapCtx.beginPath();
+        minimapCtx.arc(zx, zy, zr, 0, Math.PI * 2);
+        minimapCtx.stroke();
 
-    // Target next safe zone
-    if (zone.state !== 'FINAL') {
-      var tzx = half + zone.targetX * scale;
-      var tzy = half + zone.targetY * scale;
-      var tzr = Math.max(2, zone.targetRadius * scale);
-      minimapCtx.setLineDash([3, 3]);
-      minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.38)';
-      minimapCtx.lineWidth = 1;
-      minimapCtx.beginPath();
-      minimapCtx.arc(tzx, tzy, tzr, 0, Math.PI * 2);
-      minimapCtx.stroke();
-      minimapCtx.setLineDash([]);
+        // Target next safe zone
+        if (zone.state !== 'FINAL' && zone.targetRadius > 1) {
+          var tzx = half + zone.targetX * scale;
+          var tzy = half + zone.targetY * scale;
+          var tzr = Math.max(1.5, zone.targetRadius * scale);
+          minimapCtx.setLineDash([3, 3]);
+          minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.38)';
+          minimapCtx.lineWidth = 1;
+          minimapCtx.beginPath();
+          minimapCtx.arc(tzx, tzy, tzr, 0, Math.PI * 2);
+          minimapCtx.stroke();
+          minimapCtx.setLineDash([]);
+        }
+      }
     }
 
     // Alive nuclei
     var nuclei = state.nuclei;
+    var isSquadMode = state.gameMode === 'trios' || state.gameMode === 'duos';
     for (var i = 0; i < nuclei.length; i++) {
       var n = nuclei[i];
       if (!n.alive || n.isPlayer) continue;
       var mx = half + n.x * scale;
       var my = half + n.y * scale;
-      var dotR = n.isFriend ? 4.4 : Math.min(4.2, 1.8 + Math.sqrt(n.power) * 0.25);
+      var isSquadAlly = isSquadMode && Entities.areAllies(state.player, n);
+      var dotR = n.isFriend || isSquadAlly ? 4.2 : Math.min(4.2, 1.8 + Math.sqrt(n.power) * 0.25);
       if (n._miniHue !== n.hue) {
         n._miniHue = n.hue;
         n._miniColor = 'hsla(' + n.hue + ', 95%, 65%, 0.82)';
@@ -1243,11 +1289,11 @@
       minimapCtx.beginPath();
       minimapCtx.arc(mx, my, dotR, 0, Math.PI * 2);
       minimapCtx.fill();
-      if (n.isFriend) {
+      if (n.isFriend || isSquadAlly) {
         minimapCtx.strokeStyle = Entities.areAllies(state.player, n) ? '#7affd4' : '#ffe066';
         minimapCtx.lineWidth = 1.5;
         minimapCtx.beginPath();
-        minimapCtx.arc(mx, my, dotR + 2.4, 0, Math.PI * 2);
+        minimapCtx.arc(mx, my, dotR + 2.2, 0, Math.PI * 2);
         minimapCtx.stroke();
       }
     }

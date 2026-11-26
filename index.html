@@ -25,11 +25,11 @@
     <div class="hud-panel stats-card">
       <div class="stat-row">
         <div class="stat-head">
-          <span>⚡ Électrons</span>
-          <strong id="hud-electrons" class="mono">10 / 17</strong>
+          <span>⚡ Nuée (prochain électron)</span>
+          <strong id="hud-electrons" class="mono">⚡ 8</strong>
         </div>
         <div class="bar-track">
-          <div id="hud-electrons-bar" class="bar-fill cyan"></div>
+          <div id="hud-electrons-bar" class="bar-fill cyan prod-bar"></div>
         </div>
       </div>
 
@@ -46,7 +46,7 @@
       <div class="mini-metrics">
         <div class="metric-chip">
           <span>Production <em id="reactor-badge" class="reactor-badge hidden">⚡ RÉACTEUR</em></span>
-          <strong id="hud-prod" class="mono accent-cyan">+0.8 /s</strong>
+          <strong id="hud-prod" class="mono accent-cyan">+0.20 /s</strong>
         </div>
         <div class="metric-chip">
           <span>Puissance</span>
@@ -76,25 +76,26 @@
         <div class="pill-sep"></div>
         <div class="pill-seg">
           <span id="hud-zone-label" class="zone-status stable">Zone stable</span>
-          <strong id="hud-zone-timer" class="mono">0:20</strong>
+          <strong id="hud-zone-timer" class="mono">0:40</strong>
         </div>
       </div>
 
+      <!-- Army Scoreboard (3 Couleurs / 2 Camps) -->
       <div id="team-scoreboard" class="hud-panel team-scoreboard">
         <div class="team-counts-row">
-          <div class="team-pill team-0">
-            <span class="team-pip" style="background:#00f0ff;box-shadow:0 0 8px #00f0ff"></span>
-            <span class="team-lbl">Cyan</span>
+          <div id="team-pill-0" class="team-pill team-0">
+            <span id="team-pip-0" class="team-pip" style="background:#00f0ff;box-shadow:0 0 8px #00f0ff"></span>
+            <span id="team-lbl-0" class="team-lbl">Cyan</span>
             <strong id="team-count-0" class="mono">17</strong>
           </div>
-          <div class="team-pill team-1">
-            <span class="team-pip" style="background:#ff2ea6;box-shadow:0 0 8px #ff2ea6"></span>
-            <span class="team-lbl">Magenta</span>
+          <div id="team-pill-1" class="team-pill team-1">
+            <span id="team-pip-1" class="team-pip" style="background:#ff2ea6;box-shadow:0 0 8px #ff2ea6"></span>
+            <span id="team-lbl-1" class="team-lbl">Magenta</span>
             <strong id="team-count-1" class="mono">17</strong>
           </div>
-          <div class="team-pill team-2">
-            <span class="team-pip" style="background:#ffb700;box-shadow:0 0 8px #ffb700"></span>
-            <span class="team-lbl">Ambre</span>
+          <div id="team-pill-2" class="team-pill team-2">
+            <span id="team-pip-2" class="team-pip" style="background:#ffb700;box-shadow:0 0 8px #ffb700"></span>
+            <span id="team-lbl-2" class="team-lbl">Ambre</span>
             <strong id="team-count-2" class="mono">17</strong>
           </div>
         </div>
@@ -103,6 +104,16 @@
           <div id="team-bar-1" class="team-bar-seg" style="width:33.3%;background:#ff2ea6"></div>
           <div id="team-bar-2" class="team-bar-seg" style="width:33.4%;background:#ffb700"></div>
         </div>
+      </div>
+
+      <!-- Squad Scoreboard (Trios 20x3 / Duos 25x2) -->
+      <div id="squad-scoreboard" class="hud-panel squad-scoreboard hidden">
+        <div class="squad-meta-seg">
+          <span id="squad-kind-lbl" class="pill-lbl">Escouades</span>
+          <strong id="squad-alive-count" class="mono">20 / 20</strong>
+        </div>
+        <div class="pill-sep"></div>
+        <div id="squad-mates-row" class="squad-mates-row"></div>
       </div>
 
       <div id="zone-warning-banner" class="zone-warning hidden">
@@ -164,23 +175,69 @@
         <div class="atom-badge">⚛️</div>
         <div>
           <h1 class="game-title">NUCLEON</h1>
-          <p class="game-tagline">Match à mort quantique • 51 Noyaux • Nuées d'électrons</p>
+          <p class="game-tagline">Arène quantique • Nuées d'électrons sans limite • Escouades, Armées &amp; Solo</p>
         </div>
       </div>
 
       <div class="mechanics-grid">
         <div class="mech-item">
-          <span class="mech-icon">🛡️</span>
+          <span class="mech-icon">⚡</span>
           <div>
-            <strong>Bouclier intelligent & Recharge</strong>
-            <p>Le bouclier intercepte les électrons ennemis (+30% rés.). Combattre coûte cher : rechargez entre deux duels !</p>
+            <strong>Électrons sans limite &amp; Noyau</strong>
+            <p>Aucun plafond ! Un petit noyau produit très lentement : récoltez quarks et rivaux pour accélérer.</p>
           </div>
         </div>
         <div class="mech-item">
-          <span class="mech-icon">⚛️</span>
+          <span class="mech-icon">🛡️</span>
           <div>
-            <strong>Équipes 3 Couleurs / Solo</strong>
-            <p>Aucun tir allié entre noyaux de même couleur. Éliminez les autres couleurs en vidant leur intégrité.</p>
+            <strong>6 Modes &amp; Bouclier (+30%)</strong>
+            <p>Trios (20×3), Duos (25×2), Armées, Solo ou Infini. Le bouclier intercepte l'assaut ennemi.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-section">
+        <span class="field-label">Mode de jeu</span>
+        <div id="mode-row" class="mode-grid">
+          <button type="button" class="mode-pill active" data-mode="teams">⚔️ 3 Équipes</button>
+          <button type="button" class="mode-pill" data-mode="trios">🔺 Trios (20×3)</button>
+          <button type="button" class="mode-pill" data-mode="duos">🔹 Duos (25×2)</button>
+          <button type="button" class="mode-pill" data-mode="clash">💥 2 Camps (30v30)</button>
+          <button type="button" class="mode-pill" data-mode="solo">⚛️ Solo</button>
+          <button type="button" class="mode-pill" data-mode="endless">♾️ Infini</button>
+        </div>
+        <div id="mode-desc" class="world-desc">3 armées de 17 noyaux (Cyan, Magenta, Ambre) — zéro tir allié</div>
+      </div>
+
+      <!-- Configurable Match Duration & Zone Timing (hidden in Endless mode) -->
+      <div id="zone-config-section" class="form-section zone-config-box">
+        <div class="zone-config-head">
+          <span class="field-label">Durée de la partie &amp; Zone rouge</span>
+          <strong id="zone-total-duration" class="zone-total-badge mono">⏱️ ~4 min 28</strong>
+        </div>
+
+        <div id="zone-preset-row" class="zone-preset-row">
+          <button type="button" class="zone-preset-pill" data-preset="blitz">⚡ ~2 min</button>
+          <button type="button" class="zone-preset-pill active" data-preset="normal">⏱️ ~4m30</button>
+          <button type="button" class="zone-preset-pill" data-preset="long">🌌 ~8 min</button>
+          <button type="button" class="zone-preset-pill" data-preset="marathon">🪐 ~15 min</button>
+        </div>
+
+        <div class="zone-sliders-grid">
+          <div class="slider-group">
+            <div class="slider-head">
+              <label for="zone-delay-slider">Début rétrécissement</label>
+              <strong id="zone-delay-val" class="mono">0:45</strong>
+            </div>
+            <input id="zone-delay-slider" type="range" min="0" max="600" step="5" value="45" />
+          </div>
+
+          <div class="slider-group">
+            <div class="slider-head">
+              <label for="zone-speed-slider">Vitesse fermeture</label>
+              <strong id="zone-speed-val" class="mono">18 px/s (Normale)</strong>
+            </div>
+            <input id="zone-speed-slider" type="range" min="4" max="60" step="1" value="18" />
           </div>
         </div>
       </div>
@@ -203,21 +260,6 @@
         </div>
 
         <div class="form-section">
-          <span class="field-label">Mode de jeu</span>
-          <div class="mode-row">
-            <button type="button" class="mode-pill active" data-mode="teams">Équipes (3 Couleurs)</button>
-            <button type="button" class="mode-pill" data-mode="solo">Solo</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="form-row">
-        <div class="form-section">
-          <span id="color-picker-label" class="field-label">Votre équipe</span>
-          <div id="swatch-row" class="swatch-row"></div>
-        </div>
-
-        <div class="form-section">
           <span class="field-label">Intensité IA</span>
           <div class="diff-row">
             <button type="button" class="diff-pill" data-diff="detente">Détente</button>
@@ -225,6 +267,11 @@
             <button type="button" class="diff-pill" data-diff="chaos">Chaos</button>
           </div>
         </div>
+      </div>
+
+      <div class="form-section">
+        <span id="color-picker-label" class="field-label">Votre équipe</span>
+        <div id="swatch-row" class="swatch-row"></div>
       </div>
 
       <!-- Multiplayer Room (4-Letter Code) -->
